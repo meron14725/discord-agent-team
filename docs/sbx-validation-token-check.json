@@ -1,0 +1,86 @@
+{
+  "at": "2026-09-12T05:30:02.866554+00:00",
+  "sandbox": "dat-probe-86c056275aa3",
+  "model_invoked": false,
+  "status": "failed",
+  "steps": [
+    {
+      "args": [
+        "version"
+      ],
+      "exit_code": 0,
+      "stdout": "sbx version: v0.42.1 cc6e400a4a3ce3ce5e0b2b77b8ee352aac854c64\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No sandboxes found.\nLaunch one: sbx run claude\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "create",
+        "--name",
+        "dat-probe-86c056275aa3",
+        "--no-share-skills",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--deny-network",
+        "*",
+        "codex"
+      ],
+      "exit_code": 0,
+      "stdout": "── RESOLVE SETUP\n   resolving configuration…\n     sandbox    dat-probe-86c056275aa3\n     agent      codex\n     workspace  none · no workspace bind mount\n     image      docker/sandbox-templates:codex-docker\n     cpu        2\n     memory     4g\n   ✓ configuration resolved\n── PREPARE IMAGE\n   → pull docker/sandbox-templates:codex-docker\n     8b4cd0a46c8b downloaded\n     6db24c2c2317 downloaded\n     4478aac4b542 downloaded  3.3 kB\n     f2fa53ce37dd downloaded\n     69eddaf8acd5 downloaded\n     4caad438b9ed downloaded\n     ef1af6345ed8 downloaded\n     ed8299a102e9 downloaded  40.7 MB\n     beacc9477939 downloaded\n     b4a1c139fcf7 downloaded\n     679089cf7240 downloaded\n     968bfd037b67 downloaded\n     377f7cfd222f downloaded  42.8 MB\n     dcb0d578d1d1 downloaded  338 B\n     50914c2b24a1 downloaded\n     2774e21dfade downloaded  2.4 MB\n     e93fa4cd2236 downloaded  21.2 MB\n     c30dcdd44718 downloaded  96.6 MB\n     ca9d49147a4f downloaded\n     26ac473384d2 downloaded  243.2 MB\n     4b38d3f62b3c downloaded\n     d0053d113eda downloaded  61.9 MB\n     ce7b7749b88d downloaded  323.0 MB\n   ✓ image ready\n── CREATE SANDBOX\n   ✓ Created sandbox dat-probe-86c056275aa3\n\nTo connect to this sandbox, run:\n  sbx run --name dat-probe-86c056275aa3\n",
+      "stderr": "Warning: no OpenAI credentials available. codex will start logged-out.\nTo set credentials on the host before creating sandboxes, run one of:\n  sbx secret set openai --oauth   # Sign in with ChatGPT (recommended)\n  sbx secret set openai           # OpenAI API key (reads from stdin)\nOr, inside the sandbox, run `codex login` and choose the device-code flow.\nThat login is not saved to the host credential store — it stays in that\nsandbox, so every new codex sandbox starts logged-out again.\n"
+    },
+    {
+      "args": [
+        "inspect",
+        "dat-probe-86c056275aa3"
+      ],
+      "exit_code": 0,
+      "stdout": "\n  Name:           dat-probe-86c056275aa3\n  Agent:          codex\n  Kits:           none\n  State:          running (4s)\n  Image:          docker/sandbox-templates:codex-docker\n  Image digest:   sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fbfc61f47568092a93fb9dc88b0\n  Auth mode:      none · openai\n  Workspace:      -\n  Network Policy: sandbox-specific\n  Mount Policy:   allowed\n  Proxy:          172.17.0.0:3128\n  Secrets:        mcpgateway (uploaded)\n  MCP gateway:    configured\n  Ports:          none published\n  Sessions:       0\n\n  Daemon:         v0.42.1   uptime 2m\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "exec",
+        "dat-probe-86c056275aa3",
+        "codex",
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "codex-cli 0.149.1\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "exec",
+        "-i",
+        "dat-probe-86c056275aa3",
+        "python3",
+        "-c",
+        "import json, os, pathlib, sys\ndata = json.load(sys.stdin)\nassert not pathlib.Path(data['host_path']).exists(), 'host project visible'\nfor key in ('GITHUB_TOKEN', 'GH_TOKEN', 'DATABASE_URL', 'DISCORD_TOKEN', 'INTERNAL_TOKEN'):\n    assert not os.environ.get(key), 'unexpected control credential: ' + key\ntarget = pathlib.Path('/home/agent/workspace/probe.json')\ntarget.write_text(json.dumps({'nonce': data['nonce']}))\nprint(target.read_text())\n"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 5, in <module>\n    assert not os.environ.get(key), 'unexpected control credential: ' + key\n           ^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: unexpected control credential: GH_TOKEN\n"
+    },
+    {
+      "args": [
+        "rm",
+        "--force",
+        "dat-probe-86c056275aa3"
+      ],
+      "exit_code": 0,
+      "stdout": "Deleting sandbox dat-probe-86c056275aa3...\nSandbox 'dat-probe-86c056275aa3' removed\n",
+      "stderr": ""
+    }
+  ],
+  "error": "sbx exec failed: Traceback (most recent call last):\n  File \"<string>\", line 5, in <module>\n    assert not os.environ.get(key), 'unexpected control credential: ' + key\n           ^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: unexpected control credential: GH_TOKEN\n"
+}

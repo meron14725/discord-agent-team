@@ -1,0 +1,48 @@
+{
+  "date": "2026-09-12",
+  "scope": "User-approved four-syscall validation only; not enabled in base compose",
+  "source": {
+    "repository": "https://github.com/moby/profiles",
+    "commit": "3c28324314729dbade8287e868eef6338c42807a",
+    "url": "https://raw.githubusercontent.com/moby/profiles/3c28324314729dbade8287e868eef6338c42807a/seccomp/default.json",
+    "sha256": "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74"
+  },
+  "derived_sha256": "51c592693c78584fe4b1ca95440e4742f079d679cb259e32cee0c383b53c3372",
+  "modified_syscalls": [
+    "clone",
+    "clone3",
+    "setns",
+    "unshare"
+  ],
+  "baseline_nested_namespaces": {
+    "success": false,
+    "errno": "EPERM"
+  },
+  "experiment_upstream": {
+    "uid": 10001,
+    "no_new_privileges": true,
+    "capability_bounding_set": 0,
+    "seccomp_filter": true,
+    "control_credentials_absent": true,
+    "docker_socket_absent": true,
+    "nested_namespaces": true
+  },
+  "experiment_downstream": {
+    "uid": 10001,
+    "no_new_privileges": true,
+    "capability_bounding_set": 0,
+    "seccomp_filter": true,
+    "control_credentials_absent": true,
+    "docker_socket_absent": true,
+    "nested_namespaces": true
+  },
+  "bubblewrap": {
+    "success": false,
+    "stderr": "bwrap: Failed to make / slave: Operation not permitted"
+  },
+  "codex_preflight": "blocked before model invocation",
+  "sandbox_write_boundary_checks": "not reached; sandbox startup failed",
+  "sandbox_network_checks": "not reached; sandbox startup failed",
+  "model_calls": 0,
+  "base_compose_modified": false
+}

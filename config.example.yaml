@@ -1,0 +1,46 @@
+# Copy to config.yaml; mock never contacts Discord/GitHub/OpenAI.
+mode: mock
+merge_mode: human_gate
+guild_id: demo-guild
+channel_id: demo-channel
+owner_ids: [demo-owner]
+default_repo: demo
+repos:
+  demo:
+    repository: example/demo
+    base: master
+    publisher_login: agent-publisher[bot]
+    reviewer_login: agent-reviewer[bot]
+    checks:
+      - {name: tests, app_id: 1} # Replace with actual check name AND issuer GitHub App ID.
+    test_commands: [[python, -m, unittest, discover]]
+    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*']
+auth_mode: chatgpt
+model: '' # Subscription CLI default; pin an available model if desired.
+daily_run_limit: 30
+task_run_limit: 10
+daily_budget_usd: 0
+task_budget_usd: 0
+run_reservation_usd: 0 # Conservative reservation per invocation; NOT actual billing.
+max_rounds: 3
+lease_seconds: 90
+run_timeout: 1200
+poll_seconds: 60
+approval_seconds: 86400
+max_files: 100
+max_bytes: 2000000
+auto_max_lines: 200
+message_content: false # /answer works without privileged Message Content Intent.
+natural_language_requests: false # true: allowed owners' new general messages become requests.
+coordination_timeout: 300
+specialist_concurrency: 1
+specialist_retry_attempts: 1
+specialist_urls: {}
+discord_sre:
+  enabled: false
+  managed_category_ids: [] # Human-created project/testing categories only.
+  protected_channel_ids: [] # Include general and the audit channel before enabling.
+  protected_role_ids: [] # Human admin/owner and the SRE Bot's own role.
+  audit_channel_id: ''
+  require_approval: true
+  approval_seconds: 900

@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/moby/profiles",
+  "commit": "3c28324314729dbade8287e868eef6338c42807a",
+  "url": "https://raw.githubusercontent.com/moby/profiles/3c28324314729dbade8287e868eef6338c42807a/seccomp/default.json",
+  "sha256": "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74"
+}

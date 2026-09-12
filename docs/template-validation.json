@@ -1,0 +1,17 @@
+{
+  "repository": "meron14725/agent-team-python-template",
+  "private": true,
+  "default_branch": "main",
+  "files": [
+    ".gitignore",
+    "README.md",
+    "src/example.py",
+    "tests/test_example.py",
+    ".github/workflows/tests.yml"
+  ],
+  "ci_status": "success",
+  "check_name": "tests",
+  "check_app_id": 15368,
+  "head_sha": "efa2fccfdc46206d2730b7d57849d84470267a45",
+  "ci_url": "https://github.com/meron14725/agent-team-python-template/actions/runs/34679769921/job/103516104301"
+}

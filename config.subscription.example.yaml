@@ -1,0 +1,40 @@
+# User-specific connection plan. Copy to config.yaml only after filling placeholders.
+mode: live
+github_reviewer_app:
+  app_id: 4918109
+  installation_id: 161067940
+auth_mode: chatgpt
+# Empty model uses the logged-in Codex CLI default. Pin a model after checking account access.
+model: ''
+merge_mode: disabled # Switch to human_gate after CI/protection + separate reviewer verification.
+guild_id: '362822936836440064'
+channel_id: '362822936836440068' # Invite target: general. Change to a dedicated requests channel if desired.
+owner_ids: ['312561681387487232', '234858405448122368'] # Configured operator and Discord server owner.
+default_repo: project
+repos:
+  project:
+    repository: meron14725/project # New repo: meron14725/project-task-<unique ID>
+    per_task: true
+    private: true
+    template_repository: meron14725/agent-team-python-template
+    base: main # Must exist in the template / match the account's initial default branch.
+    publisher_login: meron14725
+    reviewer_login: 'meron14725-agent-reviewer[bot]'
+    checks:
+      - {name: tests, app_id: 15368} # Verified GitHub Actions issuer on the template's successful CI.
+    test_commands: [[python3, -m, unittest, discover, -s, tests]]
+    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*']
+daily_run_limit: 30 # Local run cap, not the subscription's official quota.
+task_run_limit: 10
+max_rounds: 3
+run_timeout: 1200
+poll_seconds: 60
+message_content: true
+natural_language_requests: true
+coordination_timeout: 300
+specialist_concurrency: 3
+specialist_retry_attempts: 2
+specialist_urls:
+  upstream: http://127.0.0.1:8092
+  downstream: http://127.0.0.1:8094
+  sre: http://127.0.0.1:8093

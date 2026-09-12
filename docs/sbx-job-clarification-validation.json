@@ -1,0 +1,79 @@
+{
+  "state": "Clarifying",
+  "data": {
+    "summary": "Pythonのgreeting()関数が引数なしで文字列helloを返す機能。外部通信なし。unittestで検証。仕様を作成してください。",
+    "answers": [],
+    "repository": "example/demo"
+  },
+  "github": "mock",
+  "discord_sent": false,
+  "responses": [
+    {
+      "result": {
+        "schema_version": 1,
+        "task_id": "TASK-85e8d4f5-449",
+        "spec_version": 0,
+        "spec_hash": "",
+        "head_sha": "",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "needs_clarification",
+        "summary": "greeting() が引数なしで文字列「hello」を返す機能と unittest による検証について、日本語仕様案を作成しました。配置先モジュールと対応 Python バージョンが未確定のため、実装可能な確定仕様にするには回答が必要です。",
+        "spec_markdown": "# greeting() 関数仕様\n\n## 1. 背景・目的・利用者\n\n### 背景\n引数を必要とせず、固定の挨拶文字列を返す単純な Python 関数が必要である。\n\n### 目的\n`greeting()` を呼び出した利用者が、常に文字列 `hello` を取得できるようにする。\n\n### 想定利用者\n- 本関数を呼び出す Python コードの開発者\n- `unittest` を用いて動作を検証する開発者\n\n## 2. スコープ・非スコープ\n\n### スコープ\n- 引数なしの Python 関数 `greeting()` の定義\n- `greeting()` が文字列 `hello` を返すこと\n- Python 標準ライブラリの `unittest` による自動テスト\n\n### 非スコープ\n- 利用者名などに応じた挨拶の変更\n- 多言語対応\n- コマンドライン、GUI、Web API の提供\n- ファイル、データベース、環境変数の読み書き\n- HTTP などの外部通信\n- ログ、監視、永続化機能の追加\n\n## 3. 機能要件\n\n### 正常系\n- **FR-001:** システムは `greeting` という名前の Python 関数を提供しなければならない。\n- **FR-002:** `greeting()` は呼び出し時に引数を要求してはならない。\n- **FR-003:** `greeting()` は Python の `str` 型である `hello` を返さなければならない。\n- **FR-004:** 同一プロセス内で複数回呼び出した場合も、呼び出しごとに同じ値 `hello` を返さなければならない。\n\n### 異常系\n- **FR-ERR-001:** 引数が渡された場合の独自処理は設けず、引数なしの関数定義に基づく Python 標準の `TypeError` に委ねる。\n- **FR-ERR-002:** 関数は業務固有の例外を新設してはならない。\n\n### 権限\n- **FR-PERM-001:** 関数の利用に認証または認可を要求してはならない。\n- **FR-PERM-002:** 関数は呼び出し元の権限、資格情報、秘密情報を参照してはならない。\n\n## 4. 入出力・互換性\n\n### 入力\n- 位置引数: なし\n- キーワード引数: なし\n\n### 出力\n- 型: `str`\n- 値: `hello`\n- 大文字・小文字: すべて小文字\n- 前後の空白および改行: なし\n\n### 互換性\n- Python で利用可能な通常の関数として提供する。\n- 対応 Python バージョンは未確定とする。\n- 配置先モジュールおよび import パスは未確定とする。\n\n## 5. 非機能要件・セキュリティ・運用\n\n### 非機能要件\n- **NFR-001:** 実行結果は決定的でなければならない。\n- **NFR-002:** 呼び出しによって外部から観測可能な副作用を発生させてはならない。\n- **NFR-003:** 実装は本要件を満たすために必要な最小限の複雑さに留める。\n\n### セキュリティ\n- **SEC-001:** 外部ネットワーク通信を行ってはならない。\n- **SEC-002:** ファイル、環境変数、資格情報、個人情報を読み書きしてはならない。\n- **SEC-003:** 外部入力を評価または実行してはならない。\n\n### 運用\n- **OPS-001:** 動作確認は Python 標準ライブラリの `unittest` で自動実行可能でなければならない。\n- **OPS-002:** 外部サービスやネットワーク接続をテスト実行の前提としてはならない。\n\n## 6. 受入条件\n\n- **AC-001:** `greeting()` を引数なしで呼び出すと、戻り値が厳密に `hello` と一致する。\n  - 例: `self.assertEqual(greeting(), \"hello\")`\n- **AC-002:** 戻り値の型が `str` である。\n  - 例: `self.assertIsInstance(greeting(), str)`\n- **AC-003:** 戻り値に前後の空白や改行が含まれない。\n  - 例: `self.assertEqual(repr(greeting()), \"'hello'\")`\n- **AC-004:** 複数回の呼び出しで同じ値を返す。\n  - 例: `self.assertEqual(greeting(), greeting())`\n- **AC-005:** 位置引数またはキーワード引数を渡すと Python 標準の `TypeError` になる。\n  - 例: `with self.assertRaises(TypeError): greeting(\"user\")`\n- **AC-006:** テストは外部通信なしで完了し、対象の `unittest` テストスイートがすべて成功する。\n\n## 7. テスト方針\n\n- Python 標準ライブラリの `unittest` を使用する。\n- 正常系として、戻り値、型、空白・改行の不存在、複数回呼び出しの一貫性を検証する。\n- 異常系として、位置引数およびキーワード引数を渡した場合の `TypeError` を検証する。\n- モックや外部サービスは使用しない。\n- テスト検出方法、テストファイル名、実行コマンドは既存リポジトリ規約を優先する。規約が存在しない場合は別途確定する。\n\n## 8. 制約・禁止変更\n\n### 制約\n- 実装言語は Python とする。\n- テストフレームワークは `unittest` とする。\n- 外部パッケージへの依存を追加しない。\n\n### 禁止変更\n- 外部通信機能を追加しない。\n- CI、認証情報、承認記録、エージェント指示または制御ポリシーを変更しない。\n- 本機能に無関係な既存コード、公開 API、テストを変更しない。\n- `hello` 以外の装飾、句読点、空白、改行を戻り値に追加しない。\n\n## 9. 前提・未解決事項\n\n### 前提\n- `hello` は引用符を含まない5文字の ASCII 文字列を意味する。\n- `greeting()` は同期関数であり、状態を保持しない。\n- 引数指定時には独自の入力検証を実装せず、Python の通常の関数呼び出し規則を採用する。\n\n### 未解決事項\n- `greeting()` を配置するファイルおよび公開 import パス\n- サポート対象の Python バージョン\n\n## 10. タスク・版・日付・変更履歴\n\n- タスクID: `TASK-85e8d4f5-449`\n- 仕様バージョン: `0`\n- 作成日: `2026-09-12`（UTC）\n- 状態: 確認待ち\n\n### 変更履歴\n\n| 版 | 日付 | 内容 |\n|---|---|---|\n| 0 | 2026-09-12 | 初版仕様案を作成。配置先と対応 Python バージョンは未確定。 |",
+        "questions": [
+          "`greeting()` を定義するファイル名またはモジュールの import パスを指定してください。",
+          "サポート対象の Python バージョンを指定してください。"
+        ],
+        "decision": "none",
+        "findings": [],
+        "coverage": [
+          {
+            "acceptance_id": "AC-001",
+            "status": "unknown",
+            "evidence": "仕様案に戻り値の厳密一致を定義したが、ソースおよびテストは提供されていない。"
+          },
+          {
+            "acceptance_id": "AC-002",
+            "status": "unknown",
+            "evidence": "仕様案に戻り値型を定義したが、ソースおよびテストは提供されていない。"
+          },
+          {
+            "acceptance_id": "AC-003",
+            "status": "unknown",
+            "evidence": "仕様案に空白・改行を含まない条件を定義したが、ソースおよびテストは提供されていない。"
+          },
+          {
+            "acceptance_id": "AC-004",
+            "status": "unknown",
+            "evidence": "仕様案に複数回呼び出しの一貫性を定義したが、ソースおよびテストは提供されていない。"
+          },
+          {
+            "acceptance_id": "AC-005",
+            "status": "unknown",
+            "evidence": "仕様案に引数指定時の TypeError を定義したが、ソースおよびテストは提供されていない。"
+          },
+          {
+            "acceptance_id": "AC-006",
+            "status": "unknown",
+            "evidence": "unittest と外部通信禁止を要件化したが、実行可能なテストは提供されていない。"
+          }
+        ],
+        "plan": "配置先モジュールと対応 Python バージョンへの回答を反映して互換性、テスト配置、実行条件を確定し、仕様バージョンを更新する。ソース編集は行わない。",
+        "risks": [
+          "配置先モジュールが未確定のため、利用側の import 方法とテスト対象を一意に定められない。",
+          "対応 Python バージョンが未確定のため、互換性保証範囲を確定できない。"
+        ]
+      },
+      "files": {},
+      "tests": [],
+      "usage": {
+        "input_tokens": 9935,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2604,
+        "reasoning_output_tokens": 111
+      },
+      "cli_version": "codex-cli 0.149.1",
+      "elapsed_seconds": 64.78520170797128
+    }
+  ]
+}

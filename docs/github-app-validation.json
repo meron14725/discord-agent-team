@@ -1,0 +1,22 @@
+{
+  "app_id": 4918109,
+  "slug": "meron14725-agent-reviewer",
+  "reviewer_login": "meron14725-agent-reviewer[bot]",
+  "installations": [
+    {
+      "id": 161067940,
+      "account": "meron14725",
+      "repository_selection": "all",
+      "permissions": {
+        "checks": "read",
+        "contents": "read",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "suspended": false
+    }
+  ],
+  "installation_auth_http_status": 200,
+  "validated_at": "2026-09-12T06:54:32.707631+00:00",
+  "token_persisted": false
+}

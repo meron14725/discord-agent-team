@@ -1,0 +1,9 @@
+# Explicit experiment only. Base compose.yaml keeps Docker's default seccomp.
+# docker compose -f compose.yaml -f compose.sandbox-test.yaml --profile live run --rm --no-deps upstream-worker agent-team preflight
+services:
+  upstream-worker:
+    security_opt:
+      - "seccomp=./docker/seccomp-codex-four-syscalls.json"
+  downstream-worker:
+    security_opt:
+      - "seccomp=./docker/seccomp-codex-four-syscalls.json"

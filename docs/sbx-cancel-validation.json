@@ -1,0 +1,6 @@
+{
+  "sandbox": "dat-job-396cb1eca8dc422e",
+  "model_invoked": false,
+  "status": "passed",
+  "evidence": "Process tree started; cancellation deleted VM; journal empty; inspect not found"
+}

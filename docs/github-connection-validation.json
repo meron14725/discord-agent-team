@@ -1,0 +1,7 @@
+{
+  "user_http_status": 200,
+  "login": "meron14725",
+  "expected_owner": "meron14725",
+  "owner_matches": true,
+  "account_type": "User"
+}

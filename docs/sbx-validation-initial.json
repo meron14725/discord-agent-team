@@ -1,0 +1,54 @@
+{
+  "at": "2026-09-12T05:29:11.260538+00:00",
+  "sandbox": "dat-probe-935d07791ad5",
+  "model_invoked": false,
+  "status": "failed",
+  "steps": [
+    {
+      "args": [
+        "version"
+      ],
+      "exit_code": 0,
+      "stdout": "sbx version: v0.42.1 cc6e400a4a3ce3ce5e0b2b77b8ee352aac854c64\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No sandboxes found.\nLaunch one: sbx run claude\n",
+      "stderr": "Starting sandboxd daemon...\n"
+    },
+    {
+      "args": [
+        "create",
+        "--name",
+        "dat-probe-935d07791ad5",
+        "--no-share-skills",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--deny-network",
+        "*",
+        "codex"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "ERROR: global network policy has not been initialized\n\nInitialize it with:\n  sbx policy init <allow-all|balanced|deny-all>\n"
+    },
+    {
+      "args": [
+        "rm",
+        "--force",
+        "dat-probe-935d07791ad5"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "ERROR: sandbox 'dat-probe-935d07791ad5' not found (run 'sbx ls' to see your sandboxes)\n"
+    }
+  ],
+  "error": "sbx create failed: ERROR: global network policy has not been initialized\n\nInitialize it with:\n  sbx policy init <allow-all|balanced|deny-all>\n",
+  "cleanup_error": "sbx rm failed: ERROR: sandbox 'dat-probe-935d07791ad5' not found (run 'sbx ls' to see your sandboxes)\n"
+}

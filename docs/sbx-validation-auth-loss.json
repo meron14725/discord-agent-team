@@ -1,0 +1,81 @@
+{
+  "at": "2026-09-12T05:38:42.696557+00:00",
+  "sandbox": "dat-probe-e1e401dd31fd",
+  "model_invoked": false,
+  "status": "failed",
+  "steps": [
+    {
+      "args": [
+        "version"
+      ],
+      "exit_code": 0,
+      "stdout": "sbx version: v0.42.1 cc6e400a4a3ce3ce5e0b2b77b8ee352aac854c64\n",
+      "stderr": "WARN: token refresh rejected by auth server, deleting credential: refresh token revoked: oauth2: \"invalid_grant\" \"The refresh_token was generated for a user who doesn't exist anymore.\"\n"
+    },
+    {
+      "args": [
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No sandboxes found.\nLaunch one: sbx run claude\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "secret",
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No secrets found. Run 'sbx secret set --help' to see available services.\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "mcp",
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "LOCAL · managed by you · ✓ on\n\nNo MCP servers registered\n  add one   sbx mcp add <name> --url <url>\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "create",
+        "--name",
+        "dat-probe-e1e401dd31fd",
+        "--no-share-skills",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--deny-network",
+        "*",
+        "codex"
+      ],
+      "exit_code": 0,
+      "stdout": "── RESOLVE SETUP\n   resolving configuration…\n     sandbox    dat-probe-e1e401dd31fd\n     agent      codex\n     workspace  none · no workspace bind mount\n     image      docker/sandbox-templates:codex-docker\n     cpu        2\n     memory     4g\n   ✓ configuration resolved\n── PREPARE IMAGE\n   → pull docker/sandbox-templates:codex-docker\n     8b4cd0a46c8b already present\n     4caad438b9ed already present\n     6db24c2c2317 already present\n     4478aac4b542 already present\n     f2fa53ce37dd already present\n     69eddaf8acd5 already present\n     ef1af6345ed8 already present\n   ✓ image ready\n── CREATE SANDBOX\n   ✓ Created sandbox dat-probe-e1e401dd31fd\n\nTo connect to this sandbox, run:\n  sbx run --name dat-probe-e1e401dd31fd\n",
+      "stderr": "Warning: no OpenAI credentials available. codex will start logged-out.\nTo set credentials on the host before creating sandboxes, run one of:\n  sbx secret set openai --oauth   # Sign in with ChatGPT (recommended)\n  sbx secret set openai           # OpenAI API key (reads from stdin)\nOr, inside the sandbox, run `codex login` and choose the device-code flow.\nThat login is not saved to the host credential store — it stays in that\nsandbox, so every new codex sandbox starts logged-out again.\n"
+    },
+    {
+      "args": [
+        "inspect",
+        "dat-probe-e1e401dd31fd"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "ERROR: request failed: 401 Unauthorized: user is not authenticated to Docker: secret not found\nno valid user session found, please sign in to Docker to proceed\n\nSign in with: sbx login\n"
+    },
+    {
+      "args": [
+        "rm",
+        "--force",
+        "dat-probe-e1e401dd31fd"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "ERROR: failed to look up sandbox 'dat-probe-e1e401dd31fd': lookup runtime: request failed: 401 Unauthorized: user is not authenticated to Docker: secret not found\nno valid user session found, please sign in to Docker to proceed\n"
+    }
+  ],
+  "error": "sbx inspect failed: ERROR: request failed: 401 Unauthorized: user is not authenticated to Docker: secret not found\nno valid user session found, please sign in to Docker to proceed\n\nSign in with: sbx login\n",
+  "cleanup_error": "sbx rm failed: ERROR: failed to look up sandbox 'dat-probe-e1e401dd31fd': lookup runtime: request failed: 401 Unauthorized: user is not authenticated to Docker: secret not found\nno valid user session found, please sign in to Docker to proceed\n"
+}

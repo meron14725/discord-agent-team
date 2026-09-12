@@ -1,0 +1,124 @@
+{
+  "at": "2026-09-12T05:40:03.634712+00:00",
+  "sandbox": "dat-probe-7cc533967df5",
+  "model_invoked": false,
+  "status": "passed",
+  "steps": [
+    {
+      "args": [
+        "version"
+      ],
+      "exit_code": 0,
+      "stdout": "sbx version: v0.42.1 cc6e400a4a3ce3ce5e0b2b77b8ee352aac854c64\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No sandboxes found.\nLaunch one: sbx run claude\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "secret",
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "No secrets found. Run 'sbx secret set --help' to see available services.\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "mcp",
+        "ls"
+      ],
+      "exit_code": 0,
+      "stdout": "LOCAL · managed by you · ✓ on\n\nNo MCP servers registered\n  add one   sbx mcp add <name> --url <url>\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "create",
+        "--name",
+        "dat-probe-7cc533967df5",
+        "--no-share-skills",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--deny-network",
+        "*",
+        "codex"
+      ],
+      "exit_code": 0,
+      "stdout": "── RESOLVE SETUP\n   resolving configuration…\n     sandbox    dat-probe-7cc533967df5\n     agent      codex\n     workspace  none · no workspace bind mount\n     image      docker/sandbox-templates:codex-docker\n     cpu        2\n     memory     4g\n   ✓ configuration resolved\n── PREPARE IMAGE\n   → pull docker/sandbox-templates:codex-docker\n     8b4cd0a46c8b already present\n     6db24c2c2317 already present\n     4caad438b9ed already present\n     4478aac4b542 already present\n     f2fa53ce37dd already present\n     69eddaf8acd5 already present\n     ef1af6345ed8 already present\n   ✓ image ready\n── CREATE SANDBOX\n   ✓ Created sandbox dat-probe-7cc533967df5\n\nTo connect to this sandbox, run:\n  sbx run --name dat-probe-7cc533967df5\n",
+      "stderr": "Warning: no OpenAI credentials available. codex will start logged-out.\nTo set credentials on the host before creating sandboxes, run one of:\n  sbx secret set openai --oauth   # Sign in with ChatGPT (recommended)\n  sbx secret set openai           # OpenAI API key (reads from stdin)\nOr, inside the sandbox, run `codex login` and choose the device-code flow.\nThat login is not saved to the host credential store — it stays in that\nsandbox, so every new codex sandbox starts logged-out again.\n"
+    },
+    {
+      "args": [
+        "inspect",
+        "dat-probe-7cc533967df5"
+      ],
+      "exit_code": 0,
+      "stdout": "\n  Name:           dat-probe-7cc533967df5\n  Agent:          codex\n  Kits:           none\n  State:          running (2s)\n  Image:          docker/sandbox-templates:codex-docker\n  Image digest:   sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fbfc61f47568092a93fb9dc88b0\n  Auth mode:      none · openai\n  Workspace:      -\n  Network Policy: sandbox-specific\n  Mount Policy:   allowed\n  Proxy:          172.17.0.0:3128\n  Secrets:        mcpgateway (uploaded)\n  MCP gateway:    configured\n  Ports:          none published\n  Sessions:       0\n\n  Daemon:         v0.42.1   uptime 7m\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "exec",
+        "dat-probe-7cc533967df5",
+        "codex",
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "codex-cli 0.149.1\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "exec",
+        "-i",
+        "dat-probe-7cc533967df5",
+        "python3",
+        "-c",
+        "import json, os, pathlib, re, subprocess, sys\ndata = json.load(sys.stdin)\nassert not pathlib.Path(data['host_path']).exists(), 'host project visible'\nfor key in ('GITHUB_TOKEN', 'GH_TOKEN'):\n    value = os.environ.get(key, '')\n    placeholder = len(value) == 40 and re.fullmatch('gho_[A-Za-z0-9]*proxy[A-Za-z0-9]*managed[A-Za-z0-9]*', value)\n    assert value in ('', 'proxy-managed') or placeholder, 'non-placeholder credential: ' + key\nfor key in ('DATABASE_URL', 'DISCORD_TOKEN', 'INTERNAL_TOKEN'):\n    assert not os.environ.get(key), 'unexpected control credential: ' + key\nssh = subprocess.run(['ssh-add', '-l'], capture_output=True, timeout=10)\nassert ssh.returncode in (1, 2), 'SSH agent exposes identities'\ntarget = pathlib.Path('/home/agent/workspace/probe.json')\ntarget.write_text(json.dumps({'nonce': data['nonce']}))\nprint(target.read_text())\n"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"nonce\": \"2fac66f3276d47b48fdcc1e3946301c2\"}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "exec",
+        "dat-probe-7cc533967df5",
+        "python3",
+        "-c",
+        "import urllib.request, urllib.error\ntry:\n    response = urllib.request.urlopen('https://example.com', timeout=10)\nexcept urllib.error.HTTPError as error:\n    assert error.code == 403, str(error)\n    print('HTTP 403: example.com denied')\nexcept urllib.error.URLError as error:\n    assert '403' in str(error.reason), str(error)\n    print('Proxy HTTP 403: example.com denied')\nelse:\n    raise RuntimeError('egress unexpectedly allowed: ' + str(response.status))\n"
+      ],
+      "exit_code": 0,
+      "stdout": "HTTP 403: example.com denied\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "stop",
+        "dat-probe-7cc533967df5"
+      ],
+      "exit_code": 0,
+      "stdout": "Sandbox 'dat-probe-7cc533967df5' stopped; state preserved. Restart with: sbx run --name dat-probe-7cc533967df5\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "rm",
+        "--force",
+        "dat-probe-7cc533967df5"
+      ],
+      "exit_code": 0,
+      "stdout": "Deleting sandbox dat-probe-7cc533967df5...\nSandbox 'dat-probe-7cc533967df5' removed\n",
+      "stderr": ""
+    }
+  ]
+}

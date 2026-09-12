@@ -1,0 +1,15 @@
+{
+  "registered_commands": [
+    "request",
+    "answer",
+    "revise",
+    "status",
+    "pause",
+    "resume",
+    "cancel",
+    "retry"
+  ],
+  "mode": "live",
+  "merge_mode": "disabled",
+  "end_to_end_status": "awaiting_user_request"
+}

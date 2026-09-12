@@ -1,0 +1,121 @@
+x-hardening: &hardening
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  tmpfs: ['/tmp:rw,noexec,nosuid,size=128m']
+
+services:
+  postgres:
+    image: postgres:17.7-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: team
+      POSTGRES_DB: team
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [db-data:/var/lib/postgresql/data]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U team -d team']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 1g
+    cpus: 1
+
+  orchestrator:
+    <<: *hardening
+    image: discord-agent-team:0.1.0
+    build: {context: ., target: runtime}
+    environment:
+      TEAM_CONFIG: /app/config.yaml
+    volumes: ['./config.yaml:/app/config.yaml:ro', 'artifacts:/artifacts']
+    secrets: [db_password, internal_token, worker_token, github_publisher_token, github_reviewer_token, github_merger_token]
+    networks: [database, gateway, upstream, downstream, outbound]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8080/health")']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 1g
+    cpus: 1
+
+  discord-gateway:
+    <<: *hardening
+    profiles: [live]
+    image: discord-agent-team:0.1.0
+    command: [agent-team, gateway]
+    volumes: ['./config.yaml:/app/config.yaml:ro']
+    secrets: [internal_token, discord_coordinator_token, discord_upstream_token, discord_downstream_token, discord_sre_token]
+    networks: [gateway, outbound]
+    depends_on:
+      orchestrator: {condition: service_healthy}
+    mem_limit: 512m
+    cpus: 0.5
+
+  upstream-worker:
+    <<: *hardening
+    profiles: [live]
+    image: discord-agent-worker:0.1.0
+    build: {context: ., target: worker}
+    environment: {WORKER_ROLE: upstream, AUTH_MODE: chatgpt, CODEX_HOME: /codex-auth}
+    secrets: [openai_api_key, worker_token]
+    volumes: [upstream-workspace:/workspace, codex-auth:/codex-auth]
+    networks: [upstream, upstream-outbound]
+    mem_limit: 2g
+    cpus: 1
+
+  downstream-worker:
+    <<: *hardening
+    profiles: [live]
+    image: discord-agent-worker:0.1.0
+    build: {context: ., target: worker}
+    environment: {WORKER_ROLE: downstream, AUTH_MODE: chatgpt, CODEX_HOME: /codex-auth}
+    secrets: [openai_api_key, worker_token]
+    volumes: [downstream-workspace:/workspace, codex-auth:/codex-auth]
+    networks: [downstream, downstream-outbound]
+    mem_limit: 3g
+    cpus: 2
+
+  demo:
+    profiles: [demo]
+    image: discord-agent-team:0.1.0
+    build: {context: ., target: runtime}
+    command: [agent-team, demo]
+    network_mode: none
+    read_only: true
+    tmpfs: ['/tmp:rw,nosuid,size=128m']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  codex-auth:
+  db-data:
+  artifacts:
+  upstream-workspace:
+  downstream-workspace:
+networks:
+  database: {internal: true}
+  gateway: {internal: true}
+  upstream: {internal: true}
+  downstream: {internal: true}
+  outbound: {}
+  upstream-outbound: {}
+  downstream-outbound: {}
+secrets:
+  db_password: {file: ./secrets/db_password}
+  internal_token: {file: ./secrets/internal_token}
+  worker_token: {file: ./secrets/worker_token}
+  github_publisher_token: {file: ./secrets/github_publisher_token}
+  github_reviewer_token: {file: ./secrets/github_reviewer_token}
+  github_merger_token: {file: ./secrets/github_merger_token}
+  discord_upstream_token: {file: ./secrets/discord_upstream_token}
+  discord_downstream_token: {file: ./secrets/discord_downstream_token}
+  discord_coordinator_token: {file: ./secrets/discord_coordinator_token}
+  discord_sre_token: {file: ./secrets/discord_sre_token}
+  openai_api_key: {file: ./secrets/openai_api_key}

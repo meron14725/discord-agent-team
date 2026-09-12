@@ -1,0 +1,60 @@
+[
+  {
+    "role": "upstream",
+    "bot_id": "1548215294013603910",
+    "bot_name": "上流エンジニア",
+    "is_bot": true,
+    "guild_id": "362822936836440064",
+    "channel_id": "362822936836440068",
+    "channel_name": "general",
+    "administrator": false,
+    "permissions": {
+      "view_channel": true,
+      "send_messages": true,
+      "send_messages_in_threads": true,
+      "create_public_threads": true,
+      "read_message_history": true,
+      "attach_files": true
+    }
+  },
+  {
+    "role": "downstream",
+    "bot_id": "1548215608238153758",
+    "bot_name": "下流エンジニア",
+    "is_bot": true,
+    "guild_id": "362822936836440064",
+    "channel_id": "362822936836440068",
+    "channel_name": "general",
+    "administrator": false,
+    "permissions": {
+      "view_channel": true,
+      "send_messages": true,
+      "send_messages_in_threads": true,
+      "create_public_threads": true,
+      "read_message_history": true,
+      "attach_files": true
+    }
+  },
+  {
+    "role": "sre",
+    "bot_id": "1548244671032070245",
+    "bot_name": "情シス・SRE",
+    "is_bot": true,
+    "guild_id": "362822936836440064",
+    "channel_id": "1548271686703517726",
+    "channel_name": "sre-audit",
+    "managed_category_id": "1548271601252827146",
+    "administrator": false,
+    "permissions": {
+      "view_audit_log": true,
+      "manage_channels": true,
+      "manage_roles": false,
+      "manage_guild": false
+    },
+    "validation": {
+      "audit_log_http_status": 200,
+      "trusted_snapshot_discord_reply": true,
+      "validated_at": "2026-09-12"
+    }
+  }
+]

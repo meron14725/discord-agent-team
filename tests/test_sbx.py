@@ -1,0 +1,227 @@
+import asyncio
+import json
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from agent_team.adapters.codex import MockRunner
+from agent_team.adapters.sbx import SbxRunner
+from agent_team.contracts import RunRequest
+from agent_team.policy import GuardError
+from agent_team.worker import create_worker
+
+TOKEN = "test-worker-credential-" * 3
+
+
+def request(**overrides):
+    values = dict(
+        job_id="job-1",
+        role="upstream",
+        kind="clarify",
+        task_id="task-1",
+        spec_version=1,
+        spec_hash="hash",
+        base_sha="base",
+        head_sha="head",
+        prompt="sample",
+        files={},
+        test_commands=[],
+        model="",
+        timeout=10,
+    )
+    return RunRequest(**(values | overrides))
+
+
+def test_host_worker_requires_auth_for_run_cancel_and_health():
+    with TestClient(create_worker(MockRunner(), TOKEN, "both")) as client:
+        assert client.post("/run", json=request().model_dump()).status_code == 401
+        assert client.post("/cancel/job-1").status_code == 401
+        assert client.get("/health").status_code == 401
+        headers = {"Authorization": "Bearer " + TOKEN}
+        assert client.post("/run", json=request().model_dump(), headers=headers).status_code == 200
+        assert (
+            client.post(
+                "/run",
+                json=request(role="coordinator", kind="coordinate").model_dump(),
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/run",
+                json=request(role="sre", kind="respond").model_dump(),
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post("/run", json=request(kind="implement").model_dump(), headers=headers).status_code
+            == 403
+        )
+        assert (
+            client.post("/run", json=request(auth_mode="api_key").model_dump(), headers=headers).status_code
+            == 403
+        )
+
+
+def test_specialist_pool_runs_two_agents_concurrently_and_separates_sre():
+    class ConcurrentRunner(MockRunner):
+        def __init__(self):
+            super().__init__()
+            self.active = 0
+            self.peak = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, value):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            if self.active == 2:
+                self.started.set()
+            try:
+                await self.release.wait()
+                return await super().run(value)
+            finally:
+                self.active -= 1
+
+    async def verify():
+        runner = ConcurrentRunner()
+        app = create_worker(runner, TOKEN, "specialists", capacity=2)
+        headers = {"Authorization": "Bearer " + TOKEN}
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            first = asyncio.create_task(
+                client.post(
+                    "/run",
+                    json=request(job_id="up", role="upstream", kind="respond").model_dump(),
+                    headers=headers,
+                )
+            )
+            second = asyncio.create_task(
+                client.post(
+                    "/run",
+                    json=request(job_id="down", role="downstream", kind="respond").model_dump(),
+                    headers=headers,
+                )
+            )
+            await asyncio.wait_for(runner.started.wait(), 1)
+            busy = await client.post(
+                "/run",
+                json=request(job_id="third", role="upstream", kind="respond").model_dump(),
+                headers=headers,
+            )
+            separated = await client.post(
+                "/run",
+                json=request(job_id="sre", role="sre", kind="respond").model_dump(),
+                headers=headers,
+            )
+            assert busy.status_code == 409
+            assert separated.status_code == 403
+            runner.release.set()
+            responses = await asyncio.gather(first, second)
+            assert [response.status_code for response in responses] == [200, 200]
+            assert runner.peak == 2
+
+    asyncio.run(verify())
+
+
+@pytest.mark.parametrize(
+    "change", [{"auth_mode": "api_key"}, {"kind": "implement"}, {"files": {"../escape": "x"}}, {"timeout": 0}]
+)
+def test_invalid_request_never_launches_vm(change, tmp_path):
+    class NeverLaunch(SbxRunner):
+        async def command(self, *args, **kwargs):
+            pytest.fail("Invalid input must be rejected before launching sbx")
+
+    with pytest.raises(GuardError):
+        asyncio.run(NeverLaunch(tmp_path).run(request(**change)))
+
+
+def test_timeout_removes_vm_even_when_exec_is_stuck(tmp_path):
+    class StuckRunner(SbxRunner):
+        removed = []
+
+        async def execute(self, request, snapshot, started):
+            self.names[request.job_id] = "dat-job-owned"
+            await asyncio.sleep(30)
+
+        async def command(self, job_id, args, *other, **kwargs):
+            self.removed.append(args)
+
+    runner = StuckRunner(tmp_path)
+    with pytest.raises(TimeoutError):
+        asyncio.run(runner.run(request(timeout=1)))
+    assert runner.removed == [["rm", "--force", "dat-job-owned"]]
+    assert not runner.names
+    assert not list(tmp_path.iterdir())
+
+
+def test_restart_recovers_only_journaled_vms_and_excludes_second_launcher(tmp_path):
+    name = "dat-job-" + "a" * 16
+    (tmp_path / "vms.json").write_text(json.dumps({"interrupted-job": name}))
+
+    class RecoveryRunner(SbxRunner):
+        removed = []
+
+        async def command(self, job_id, args, *other, **kwargs):
+            self.removed.append(args)
+
+    async def verify():
+        runner = RecoveryRunner(state_dir=tmp_path)
+        await runner.startup()
+        assert runner.removed == [["rm", "--force", name]]
+        assert json.loads((tmp_path / "vms.json").read_text()) == {}
+        other = RecoveryRunner(state_dir=tmp_path)
+        try:
+            with pytest.raises(BlockingIOError):
+                await other.startup()
+        finally:
+            if other.lock_file:
+                other.lock_file.close()
+        await runner.shutdown()
+
+    asyncio.run(verify())
+
+
+def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path):
+    class ScriptedRunner(SbxRunner):
+        calls = []
+
+        async def command(self, job_id, args, *other, **kwargs):
+            self.calls.append(args)
+            if args == ["version"]:
+                return "sbx version: v0.42.1 validated"
+            if args[:2] == ["settings", "get"]:
+                return "false"
+            if args == ["mcp", "ls"]:
+                return "No MCP servers registered"
+            if args[0] == "inspect":
+                return "Auth mode: oauth"
+            if args[:2] == ["policy", "ls"]:
+                return json.dumps(
+                    {"rules": [{"decision": "allow", "resources": ["chatgpt.com:443", "api.github.com:443"]}]}
+                )
+            if args[:2] == ["policy", "check"]:
+                return json.dumps({"allowed": args[-1] == "chatgpt.com:443"})
+            if args[-2:] == ["codex", "--version"]:
+                return "codex-cli 0.149.1"
+            if args[0] == "exec" and "-c" in args and "Non-regular artifact" in args[-2]:
+                response = await MockRunner().run(request(task_id="stale-task"))
+                return json.dumps({"files": {}, "result": response.result.model_dump()})
+            return ""
+
+    runner = ScriptedRunner(tmp_path)
+    with pytest.raises(GuardError, match="identity"):
+        asyncio.run(runner.run(request()))
+    create = next(args for args in runner.calls if args[0] == "create")
+    assert create[-1].endswith("/source:ro") and create[-2].endswith("/scratch")
+    assert any(
+        args[:3] == ["policy", "deny", "network"] and args[-1] == "api.github.com:443"
+        for args in runner.calls
+    )
+    assert runner.calls[-1][0:2] == ["rm", "--force"]
+    invocation = next(args for args in runner.calls if "--output-last-message" in args)
+    assert "--ignore-user-config" in invocation
+    assert 'model_providers.sandboxd.base_url="https://chatgpt.com/backend-api/codex"' in invocation

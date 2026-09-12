@@ -89,8 +89,14 @@ def main():
         print(f"Configuration valid: mode={settings.mode}, repos={','.join(settings.repos)}")
     else:
         import os
+        from urllib.parse import quote
 
-        Database(os.environ["DATABASE_URL"]).migrate()
+        from .config import secret
+
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            url = f"postgresql+psycopg://team:{quote(secret('DB_PASSWORD'), safe='')}@postgres/team"
+        Database(url).migrate()
 
 
 if __name__ == "__main__":

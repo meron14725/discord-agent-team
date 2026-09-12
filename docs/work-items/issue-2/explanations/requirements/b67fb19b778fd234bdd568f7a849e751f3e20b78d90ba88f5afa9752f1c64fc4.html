@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue #2 · Discordを入口にしたAI会社の標準開発フロー</title>
+<style>
+:root {
+  --bg:#fff; --fg:#14161a; --muted:#5c6470; --line:#e3e6ea; --card:#fbfcfd; --accent:#2f6feb;
+  --warn-bg:#fff6e5; --warn-line:#e8a33d; --danger-bg:#fdeeee; --danger-line:#d9534f;
+  --ok-bg:#eef8f1; --ok-line:#3fa564; --code-bg:#f3f5f7; --tag-bg:#eceff3;
+  --ins:#3fa564; --upd:#2f6feb; --del:#d9534f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#14161a; --fg:#e7eaee; --muted:#9aa4b2; --line:#2a2f37; --card:#1a1d23; --accent:#6ea3ff;
+    --warn-bg:#2e2618; --warn-line:#c9902f; --danger-bg:#2e1c1c; --danger-line:#cf6b67;
+    --ok-bg:#17281d; --ok-line:#4fa76d; --code-bg:#21252c; --tag-bg:#262b33;
+    --ins:#4fa76d; --upd:#6ea3ff; --del:#cf6b67;
+  }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); line-height:1.75; font-size:15px;
+  font-family:"Hiragino Sans","Noto Sans JP",-apple-system,BlinkMacSystemFont,sans-serif; }
+.wrap { max-width:1120px; margin:0 auto; padding:32px 24px 80px; }
+
+/* ヘッダー */
+header.top { border-bottom:2px solid var(--fg); padding-bottom:20px; }
+.eyebrow { font-size:11px; letter-spacing:.18em; color:var(--muted); font-weight:700; }
+h1 { font-size:25px; margin:8px 0 14px; line-height:1.4; }
+.stats { display:flex; flex-wrap:wrap; gap:8px; }
+.stat { background:var(--tag-bg); border-radius:6px; padding:4px 11px; font-size:12px; color:var(--muted); }
+.stat b { color:var(--fg); font-weight:700; }
+.crumb { font-size:12px; color:var(--muted); }
+.src { font-size:12px; color:var(--muted); font-family:ui-monospace,Menlo,monospace; }
+
+/* 節 */
+.section { margin-top:52px; }
+.section-head { display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+  padding-bottom:8px; margin-bottom:20px; }
+.section-num { font-size:11px; letter-spacing:.14em; color:var(--muted); font-weight:700; font-variant-numeric:tabular-nums; }
+h2 { font-size:19px; margin:0; }
+.lead { color:var(--muted); font-size:13.5px; margin:-10px 0 20px; }
+
+/* 冒頭の要約と注意書き */
+.tldr { background:var(--ok-bg); border-left:4px solid var(--ok-line); border-radius:0 8px 8px 0;
+  padding:16px 20px; margin-top:24px; }
+.tldr p { margin:0 0 10px; } .tldr p:last-child { margin-bottom:0; }
+.headline { background:var(--warn-bg); border-left:4px solid var(--warn-line); border-radius:0 8px 8px 0;
+  padding:16px 20px; margin-top:14px; }
+.headline .h { font-weight:700; margin-bottom:6px; }
+
+/* 処理の流れ（CSSだけで描く。Mermaidを使うほどでない直線的な流れ向け） */
+.flow { display:flex; flex-direction:column; }
+.step { display:grid; grid-template-columns:46px 1fr 152px; gap:14px; align-items:start;
+  border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:var(--card); }
+.arrow { height:16px; display:flex; justify-content:center; align-items:center; color:var(--muted); font-size:13px; }
+.step-n { font-weight:800; font-size:13px; color:var(--bg); background:var(--fg); border-radius:6px;
+  text-align:center; padding:3px 0; font-variant-numeric:tabular-nums; }
+.step-title { font-weight:700; font-size:14.5px; }
+.step-desc { color:var(--muted); font-size:12.5px; margin-top:3px; }
+.step.gate { border-left:4px solid var(--warn-line); }
+.tx { font-size:10.5px; text-align:center; border-radius:5px; padding:3px 6px; font-weight:700; line-height:1.5; }
+.tx-read { background:var(--tag-bg); color:var(--muted); }
+.tx-write { background:var(--ok-bg); color:var(--ok-line); }
+.tx-none { background:var(--warn-bg); color:var(--warn-line); }
+
+/* 層と依存の向き */
+.layers { display:grid; gap:10px; }
+.layer { border:1px solid var(--line); border-radius:8px; padding:12px 16px; background:var(--card); }
+.layer-name { font-weight:700; font-size:13.5px; }
+.layer-role { color:var(--muted); font-size:12.5px; margin-top:2px; }
+.dep-note { display:flex; gap:10px; align-items:center; color:var(--muted); font-size:12.5px;
+  justify-content:center; padding:2px 0; }
+
+/* 「なぜそうなっているか」のカード */
+.cards { display:grid; gap:14px; }
+.card { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:0 8px 8px 0;
+  background:var(--card); padding:14px 18px; }
+.card.risk { border-left-color:var(--danger-line); background:var(--danger-bg); }
+.card.trap { border-left-color:var(--warn-line); background:var(--warn-bg); }
+.card-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.card-title { font-weight:700; font-size:14.5px; }
+.ref { font-size:11px; color:var(--muted); margin-left:auto; font-family:ui-monospace,Menlo,monospace; }
+.card-body { margin-top:9px; font-size:13.5px; }
+.why { margin-top:9px; padding-top:9px; border-top:1px dashed var(--line); font-size:13px; }
+.why b { color:var(--accent); }
+.card.risk .why b { color:var(--danger-line); }
+.card.trap .why b { color:var(--warn-line); }
+
+/* 識別子バッジ。チャットでの深掘り依頼に使う */
+.id { font-family:ui-monospace,Menlo,monospace; font-size:11px; font-weight:700;
+  background:var(--fg); color:var(--bg); border-radius:4px; padding:2px 7px; }
+
+/* 表 */
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:11.5px; color:var(--muted); letter-spacing:.06em; font-weight:700; }
+td.ch { font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:700; }
+.pri { display:inline-block; font-size:10.5px; font-weight:700; border-radius:4px; padding:2px 7px; white-space:nowrap; }
+.p-must { background:var(--danger-bg); color:var(--danger-line); }
+.p-work { background:var(--warn-bg); color:var(--warn-line); }
+.p-skim { background:var(--tag-bg); color:var(--muted); }
+
+/* 書き込み先の対応表（API × テーブルなど） */
+.matrix { width:100%; border-collapse:separate; border-spacing:0; font-size:12.5px; }
+.matrix th, .matrix td { border-bottom:1px solid var(--line); padding:9px 8px; text-align:center; }
+.matrix th.api { text-align:left; width:250px; }
+.matrix td.tbl { text-align:left; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+.matrix thead th { font-size:11px; color:var(--muted); font-weight:700; vertical-align:bottom; line-height:1.35; }
+.op { display:inline-block; font-size:10px; font-weight:800; border-radius:4px; padding:2px 6px; color:#fff; }
+.op-i { background:var(--ins); } .op-u { background:var(--upd); } .op-d { background:var(--del); }
+.dash { color:var(--line); }
+.untouched td { opacity:.55; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-bottom:12px; }
+
+/* Mermaid の図 */
+.mermaid-box { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:14px; overflow-x:auto; }
+.mermaid { text-align:center; }
+.mermaid svg { max-width:none; height:auto; }
+.figcap { color:var(--muted); font-size:12.5px; margin-top:8px; }
+
+/* コード表示 */
+pre.code { background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px;
+  overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.65; margin:0; }
+pre.code .ln { color:var(--muted); user-select:none; }
+pre.code .hi { background:var(--warn-bg); display:inline-block; width:100%; }
+pre.code .cmt { color:var(--muted); }
+pre.code .kw { color:var(--accent); }
+code { background:var(--code-bg); border-radius:4px; padding:1px 5px;
+  font-family:ui-monospace,Menlo,monospace; font-size:.88em; }
+
+/* 強調ブロック */
+.box { border-left:4px solid var(--danger-line); background:var(--danger-bg); border-radius:0 8px 8px 0; padding:14px 18px; }
+.box.ok { border-left-color:var(--ok-line); background:var(--ok-bg); }
+.box.warn { border-left-color:var(--warn-line); background:var(--warn-bg); }
+.box .h { font-weight:700; margin-bottom:6px; }
+
+/* 末尾の案内 */
+.ask { margin-top:56px; border:1px dashed var(--line); border-radius:8px; padding:16px 20px;
+  background:var(--card); font-size:13px; color:var(--muted); }
+.ask b { color:var(--fg); }
+
+@media (max-width:720px) {
+  .step { grid-template-columns:38px 1fr; }
+  .tx { grid-column:2; justify-self:start; }
+  .ref { margin-left:0; width:100%; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ここに本文を書く。使えるパーツは上のCSSのコメントを参照 -->
+  
+<header class="top">
+  <div class="eyebrow">REQUIREMENTS COMPLETE · APPROVAL BRIEF</div>
+  <h1>Issue #2 · Discordを入口にしたAI会社の標準開発フロー</h1>
+  <div class="stats">
+    <span class="stat"><b>状態</b> 説明・承認待ち</span>
+    <span class="stat"><b>初期構成</b> 8役</span>
+    <span class="stat"><b>受入条件</b> 17件</span>
+    <span class="stat"><b>未決事項</b> 0件</span>
+  </div>
+  <div class="src">source: meron14725/discord-agent-team#2 · 本文とコメント9件を確認 · requirements sha256 b67fb19b…c64fc4</div>
+</header>
+
+<div class="tldr">
+  <p><b>一言でいうと</b></p>
+  <p>Discordへ自然文で依頼すると、必要なAI専門役が話題ごとに会話し、GitHub Issueの要件、実装計画、実装、レビュー、PRまでを順番に引き継ぐ会社基盤です。オーナーは重要な判断と3つの承認だけを担当します。</p>
+</div>
+
+<div class="headline">
+  <div class="h">この承認の直後にコード実装は始まりません</div>
+  <div>今回承認するのは要件版です。承認後は実装計画を作り、別セッションのCTOによるレビューと2回目の視覚説明を経て、計画版を改めて承認してから実装します。</div>
+</div>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">01</span><h2>何ができたら完了か</h2></div>
+  <p class="lead">17件の受入条件を、オーナーが確認しやすい4つの結果にまとめる。</p>
+  <table>
+    <thead><tr><th>結果</th><th>できるようになること</th><th>対応する受入条件</th></tr></thead>
+    <tbody>
+      <tr><td class="ch">自然に依頼</td><td>スラッシュコマンドなしで相談し、正式案件だけがIssue化される。質問とBot同士の依頼は話題別スレッドに出る。</td><td>AC-01〜03, 14〜15</td></tr>
+      <tr><td class="ch">理解して承認</td><td>完成した要件とレビュー済み計画を図で理解し、読んだ版だけを承認できる。内容が変われば承認は失効する。</td><td>AC-03〜07</td></tr>
+      <tr><td class="ch">安全に実装</td><td>新しい実装セッション、独立レビュー、CI、最新コミット承認を通過した変更だけをBotがマージする。</td><td>AC-04〜11</td></tr>
+      <tr><td class="ch">8役から拡張</td><td>初期8役を運用し、少なくとも10役へ設定で増やせる。独立作業は4並列、書き込みと特権操作は直列になる。</td><td>AC-12〜13, 16〜17</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">02</span><h2>標準フロー</h2></div>
+  <div class="flow">
+    <div class="step"><div class="step-n">01</div><div><div class="step-title">Discordで自然文を受ける</div><div class="step-desc">統括が通常会話と正式依頼を判定。曖昧な場合だけ短く確認する。</div></div><div class="tx tx-read">オーナー → 統括</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">02</div><div><div class="step-title">CTOが要件Issueを育てる</div><div class="step-desc">目的と思想を先に記録し、調査・相談を使ってテスト可能な要件へ整える。</div></div><div class="tx tx-write">GitHub Issue</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">03</div><div><div class="step-title">要件を説明して承認</div><div class="step-desc">全論点の解決後にだけ図を生成。Issue本文の特定ハッシュを承認する。</div></div><div class="tx tx-read">承認 1 / 3</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">04</div><div><div class="step-title">計画を作り、別セッションでレビュー</div><div class="step-desc">変更対象、設計、テスト、展開、ロールバックを計画化し、説明後に承認する。</div></div><div class="tx tx-read">承認 2 / 3</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">05</div><div><div class="step-title">新しいセッションで実装</div><div class="step-desc">承認済み要件と計画だけを入力にし、案件ブランチとDraft PRで進める。</div></div><div class="tx tx-write">実装担当</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">06</div><div><div class="step-title">独立レビューとCI</div><div class="step-desc">CTOと必要な専門役が要件・計画・安全性・テストへの適合を確認する。</div></div><div class="tx tx-none">最大3修正</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">07</div><div><div class="step-title">最新コミットを承認してマージ</div><div class="step-desc">承認後にコミットが変われば再承認。最終判断後の操作だけBotが行う。</div></div><div class="tx tx-read">承認 3 / 3</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">03</span><h2>正本と承認の関係</h2></div>
+  <div class="layers">
+    <div class="layer"><div class="layer-name">GitHub Issue本文 · 要件の唯一の正本</div><div class="layer-role">現在有効な目的、範囲、要件、受入条件を保持。コメントは判断履歴として使う。</div></div>
+    <div class="dep-note">↓ Issue番号・更新情報・SHA-256を固定</div>
+    <div class="layer"><div class="layer-name">承認要件 · オーナーが読んだ特定版</div><div class="layer-role">Discordユーザー 312561681387487232 と一回限りの確認IDを結び付ける。</div></div>
+    <div class="dep-note">↓ 一致する場合だけ引き継ぐ</div>
+    <div class="layer"><div class="layer-name">版付き実装計画 · コード変更前の独立成果物</div><div class="layer-role">別セッションのCTOがレビューし、オーナーが特定版を承認する。</div></div>
+    <div class="dep-note">↓ 要件版と計画版が一致する場合だけ実装</div>
+    <div class="layer"><div class="layer-name">PR最新コミット · 最後の実行対象</div><div class="layer-role">CI・受入検証・独立レビュー・オーナー承認がそろった場合だけマージする。</div></div>
+  </div>
+  <div class="box warn" style="margin-top:16px"><div class="h">どこかが変われば後続の承認を失効</div><div>古い説明を読んだ承認で、新しい要件・計画・コードを進めないための中心ルールです。</div></div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">04</span><h2>初期8役と10役以上への拡張</h2></div>
+  <table>
+    <thead><tr><th>役割</th><th>担当</th><th>開始時</th></tr></thead>
+    <tbody>
+      <tr><td class="ch">統括</td><td>依頼判定、担当選定、進行、オーナー窓口</td><td><span class="pri p-must">既存Bot</span></td></tr>
+      <tr><td class="ch">CTO</td><td>要件定義、アーキテクチャ、技術調査、計画・実装レビュー</td><td><span class="pri p-must">上流Botを移行</span></td></tr>
+      <tr><td class="ch">UI・UX／フロントエンド</td><td>体験・画面設計、フロントエンド実装</td><td><span class="pri p-work">第4段階</span></td></tr>
+      <tr><td class="ch">バックエンド／実装統合</td><td>バックエンドと案件全体の実装統合</td><td><span class="pri p-must">下流Botを移行</span></td></tr>
+      <tr><td class="ch">QA・テスト</td><td>テスト戦略、受入検証、品質確認</td><td><span class="pri p-work">第4段階</span></td></tr>
+      <tr><td class="ch">セキュリティ／情シス・SRE</td><td>権限、Discord、GitHub、基盤、障害対応</td><td><span class="pri p-must">SRE Botを移行</span></td></tr>
+      <tr><td class="ch">評価マネージャー</td><td>エージェントと開発フローの評価、品質指標、改善判定</td><td><span class="pri p-work">第4段階</span></td></tr>
+      <tr><td class="ch">アナリスト</td><td>事業・利用データ分析、仮説検証、判断材料</td><td><span class="pri p-work">第4段階</span></td></tr>
+    </tbody>
+  </table>
+  <p class="figcap">役割台帳は少なくとも10役を登録可能にする。Discordで会話する役は個別Bot、権限を持たない内部相談役は一時的なモデル実行として扱う。</p>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">05</span><h2>Bot同士の会話は見える。ただし実行命令にはしない</h2></div>
+  <div class="flow">
+    <div class="step"><div class="step-n">A</div><div><div class="step-title">依頼元Botが相手をメンション</div><div class="step-desc">目的、依頼内容、成果物、Issue、話題IDを同じスレッドへ出す。</div></div><div class="tx tx-read">人が読めるログ</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">B</div><div><div class="step-title">制御層が型付き依頼を配送</div><div class="step-desc">Discordメッセージではなく、検査済みの内部イベントだけでworkerを起動する。</div></div><div class="tx tx-none">ループ防止</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">C</div><div><div class="step-title">依頼先Botが返信</div><div class="step-desc">受付、質問、結果、失敗を依頼元Botへのメンション付きで返す。</div></div><div class="tx tx-read">同じ話題</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">D</div><div><div class="step-title">判断を残してアーカイブ</div><div class="step-desc">Issueへ要約し、解決24時間後にスレッドをアーカイブ。削除はしない。</div></div><div class="tx tx-write">追跡可能</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">06</span><h2>中心となる設計判断</h2></div>
+  <div class="cards">
+    <div class="card"><div class="card-head"><span class="id">D-01</span><span class="card-title">Issueを唯一の要件正本にする</span><span class="ref">FR-02</span></div><div class="card-body">会話、DB、計画へ要件本文を複製せず、識別子とハッシュだけを保持する。</div><div class="why"><b>なぜ:</b> 別セッションと人間が同じ現在版を参照し、古い仕様の実装を防ぐため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-02</span><span class="card-title">視覚説明は完成後の2回だけ</span><span class="ref">FR-16</span></div><div class="card-body">要件定義中の質問ごとには作らず、完成した要件とレビュー済み計画を承認前に説明する。</div><div class="why"><b>なぜ:</b> 対話を重くせず、承認対象全体の理解に説明コストを集中するため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-03</span><span class="card-title">工程ごとに一時セッションを使う</span><span class="ref">FR-07</span></div><div class="card-body">計画、レビュー、実装を別のモデル呼び出しにし、状態は正本と成果物から復元する。</div><div class="why"><b>なぜ:</b> 暗黙の会話記憶と自己追認を避け、担当交代しても再現できるようにするため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-04</span><span class="card-title">役割と権限を台帳で分ける</span><span class="ref">FR-11</span></div><div class="card-body">新しい役は設定で追加し、代替可能性と禁止操作も明示する。</div><div class="why"><b>なぜ:</b> 8役から10役以上へ増やしても、本体の条件分岐と過剰権限を増やさないため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-05</span><span class="card-title">読み取りは並列、同じ成果物への書き込みは直列</span><span class="ref">FR-11</span></div><div class="card-body">調査・相談・レビューは最大4件。同じIssue、計画、リポジトリの変更はロックする。</div><div class="why"><b>なぜ:</b> 専門家の速度を得ながら、競合と上書き事故を防ぐため。</div></div>
+    <div class="card risk"><div class="card-head"><span class="id">D-06</span><span class="card-title">SRE特権操作は専用workerで直列化</span><span class="ref">FR-10, 11</span></div><div class="card-body">リポジトリ・Discord準備、権限、緊急抑制は事前検査、監査、事後検証を通す。</div><div class="why"><b>なぜ:</b> 自律性を保ちながら、会社基盤全体へ影響する操作の範囲を限定するため。</div></div>
+    <div class="card risk"><div class="card-head"><span class="id">D-07</span><span class="card-title">秘密情報はモデルの手前で止める</span><span class="ref">FR-15</span></div><div class="card-body">検出、削除、監査は決定論的な制御層で行い、秘密値そのものを複製しない。</div><div class="why"><b>なぜ:</b> モデルの判断に依存せず、DiscordからGitHubや成果物へ漏えいが広がるのを防ぐため。</div></div>
+    <div class="card trap"><div class="card-head"><span class="id">D-08</span><span class="card-title">自律実行には明示的な上限を置く</span><span class="ref">FR-04, 13</span></div><div class="card-body">案件30回、内部相談15回、同一論点5回、計画・実装修正各3回。到達時は止めて推奨判断を示す。</div><div class="why"><b>なぜ:</b> Codexサブスクリプション利用でも、無限相談と無限修正を避ける必要があるため。</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">07</span><h2>安全性と運用の数値</h2></div>
+  <table>
+    <thead><tr><th>対象</th><th>上限・目標</th><th>到達時の動作</th></tr></thead>
+    <tbody>
+      <tr><td>受付</td><td>5秒以内</td><td>まず受領だけを確実に返す</td></tr>
+      <tr><td>worker開始</td><td>空きがあれば30秒以内</td><td>待機状態を案件メッセージへ表示</td></tr>
+      <tr><td>状態更新</td><td>2分ごと／10分で滞留</td><td>1回再実行し、再失敗ならSREへ渡す</td></tr>
+      <tr><td>通常並列</td><td>最大4件</td><td>同一成果物の変更は常に直列</td></tr>
+      <tr><td>SRE特権</td><td>同時1件</td><td>代替役へ振り替えない</td></tr>
+      <tr><td>停止した役</td><td>最大5分・接続3回</td><td>同等以下の権限を持つ登録済み代替役のみ使用</td></tr>
+      <tr><td>モデル実行</td><td>案件30回</td><td>内訳と推奨対応を示して停止</td></tr>
+      <tr><td>GitHub失敗</td><td>待ち時間を増やして3回</td><td>停止してSREへ渡す。代替正本は作らない</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">08</span><h2>承認前に理解しておくリスク</h2></div>
+  <div class="cards">
+    <div class="card trap"><div class="card-head"><span class="id">Q-01</span><span class="card-title">大きな案件は30回の上限に達する可能性がある</span></div><div class="card-body">上限到達は失敗ではなく、人間へ状況と推奨判断を戻す安全停止として定義されている。</div></div>
+    <div class="card trap"><div class="card-head"><span class="id">Q-02</span><span class="card-title">初期稼働は4 Bot</span></div><div class="card-body">会社の役割は8役だが、UI・UX／フロントエンド、QA・テスト、評価マネージャー、アナリストはDiscord Appとトークンを追加した後に有効になる。</div></div>
+    <div class="card risk"><div class="card-head"><span class="id">Q-03</span><span class="card-title">秘密情報の誤検知でも投稿は削除される</span></div><div class="card-body">安全側に停止し、内容を残さない方針。監査メタデータと通知を基に、秘密を除いて再投稿する。</div></div>
+    <div class="card"><div class="card-head"><span class="id">Q-04</span><span class="card-title">GitHub障害中は要件作業も止まる</span></div><div class="card-body">利便性より正本の一貫性を優先する判断。復旧後に同じ版を確認して再開する。</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">09</span><h2>段階導入と戻し方</h2></div>
+  <div class="flow">
+    <div class="step"><div class="step-n">1</div><div><div class="step-title">案件状態とIssue正本</div><div class="step-desc">まず要件版と承認の土台を作る。</div></div><div class="tx tx-write">検証環境</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">2</div><div><div class="step-title">要件定義・相談・説明</div><div class="step-desc">CTOの要件対話と最初の理解ゲートを有効にする。</div></div><div class="tx tx-none">4 Bot</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">3</div><div><div class="step-title">計画・実装・PRゲート</div><div class="step-desc">現在の4 Botで一連の流れを完走する。</div></div><div class="tx tx-none">受入試験</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">4</div><div><div class="step-title">SRE準備・残り4 Bot・並列実行</div><div class="step-desc">一役ずつ接続し、少なくとも10役まで増やせることを検証する。</div></div><div class="tx tx-write">標準化</div></div>
+  </div>
+  <div class="box ok" style="margin-top:16px"><div class="h">ロールバック</div><div>問題があれば新フローの機能フラグを無効にする。新フロー案件は停止して記録を残し、新規案件を旧フローへ戻す。Issue、ブランチ、成果物、監査記録は自動削除しない。</div></div>
+</section>
+
+<div class="ask"><b>深掘りできます:</b> 「D-03を詳しく」「Q-03の事故例を見せて」のように識別子を指定してください。原文は GitHub Issue #2 です。</div>
+
+
+</div>
+
+<!-- 検証スクリプトがページ全体の高さを知るための出力。表示には影響しないので削除しない -->
+<script>
+  const reportHeight = () => {
+    document.body.dataset.pageHeight = String(document.documentElement.scrollHeight);
+  };
+  document.addEventListener('DOMContentLoaded', reportHeight);
+  window.reportPageHeight = reportHeight;
+</script>
+
+</body>
+</html>

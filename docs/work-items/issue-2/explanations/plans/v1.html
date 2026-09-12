@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue #2 実装計画 v1 解説</title>
+<style>
+:root {
+  --bg:#fff; --fg:#14161a; --muted:#5c6470; --line:#e3e6ea; --card:#fbfcfd; --accent:#2f6feb;
+  --warn-bg:#fff6e5; --warn-line:#e8a33d; --danger-bg:#fdeeee; --danger-line:#d9534f;
+  --ok-bg:#eef8f1; --ok-line:#3fa564; --code-bg:#f3f5f7; --tag-bg:#eceff3;
+  --ins:#3fa564; --upd:#2f6feb; --del:#d9534f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#14161a; --fg:#e7eaee; --muted:#9aa4b2; --line:#2a2f37; --card:#1a1d23; --accent:#6ea3ff;
+    --warn-bg:#2e2618; --warn-line:#c9902f; --danger-bg:#2e1c1c; --danger-line:#cf6b67;
+    --ok-bg:#17281d; --ok-line:#4fa76d; --code-bg:#21252c; --tag-bg:#262b33;
+    --ins:#4fa76d; --upd:#6ea3ff; --del:#cf6b67;
+  }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); line-height:1.75; font-size:15px;
+  font-family:"Hiragino Sans","Noto Sans JP",-apple-system,BlinkMacSystemFont,sans-serif; }
+.wrap { max-width:1120px; margin:0 auto; padding:32px 24px 80px; }
+
+/* ヘッダー */
+header.top { border-bottom:2px solid var(--fg); padding-bottom:20px; }
+.eyebrow { font-size:11px; letter-spacing:.18em; color:var(--muted); font-weight:700; }
+h1 { font-size:25px; margin:8px 0 14px; line-height:1.4; }
+.stats { display:flex; flex-wrap:wrap; gap:8px; }
+.stat { background:var(--tag-bg); border-radius:6px; padding:4px 11px; font-size:12px; color:var(--muted); }
+.stat b { color:var(--fg); font-weight:700; }
+.crumb { font-size:12px; color:var(--muted); }
+.src { font-size:12px; color:var(--muted); font-family:ui-monospace,Menlo,monospace; }
+
+/* 節 */
+.section { margin-top:52px; }
+.section-head { display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+  padding-bottom:8px; margin-bottom:20px; }
+.section-num { font-size:11px; letter-spacing:.14em; color:var(--muted); font-weight:700; font-variant-numeric:tabular-nums; }
+h2 { font-size:19px; margin:0; }
+.lead { color:var(--muted); font-size:13.5px; margin:-10px 0 20px; }
+
+/* 冒頭の要約と注意書き */
+.tldr { background:var(--ok-bg); border-left:4px solid var(--ok-line); border-radius:0 8px 8px 0;
+  padding:16px 20px; margin-top:24px; }
+.tldr p { margin:0 0 10px; } .tldr p:last-child { margin-bottom:0; }
+.headline { background:var(--warn-bg); border-left:4px solid var(--warn-line); border-radius:0 8px 8px 0;
+  padding:16px 20px; margin-top:14px; }
+.headline .h { font-weight:700; margin-bottom:6px; }
+
+/* 処理の流れ（CSSだけで描く。Mermaidを使うほどでない直線的な流れ向け） */
+.flow { display:flex; flex-direction:column; }
+.step { display:grid; grid-template-columns:46px 1fr 152px; gap:14px; align-items:start;
+  border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:var(--card); }
+.arrow { height:16px; display:flex; justify-content:center; align-items:center; color:var(--muted); font-size:13px; }
+.step-n { font-weight:800; font-size:13px; color:var(--bg); background:var(--fg); border-radius:6px;
+  text-align:center; padding:3px 0; font-variant-numeric:tabular-nums; }
+.step-title { font-weight:700; font-size:14.5px; }
+.step-desc { color:var(--muted); font-size:12.5px; margin-top:3px; }
+.step.gate { border-left:4px solid var(--warn-line); }
+.tx { font-size:10.5px; text-align:center; border-radius:5px; padding:3px 6px; font-weight:700; line-height:1.5; }
+.tx-read { background:var(--tag-bg); color:var(--muted); }
+.tx-write { background:var(--ok-bg); color:var(--ok-line); }
+.tx-none { background:var(--warn-bg); color:var(--warn-line); }
+
+/* 層と依存の向き */
+.layers { display:grid; gap:10px; }
+.layer { border:1px solid var(--line); border-radius:8px; padding:12px 16px; background:var(--card); }
+.layer-name { font-weight:700; font-size:13.5px; }
+.layer-role { color:var(--muted); font-size:12.5px; margin-top:2px; }
+.dep-note { display:flex; gap:10px; align-items:center; color:var(--muted); font-size:12.5px;
+  justify-content:center; padding:2px 0; }
+
+/* 「なぜそうなっているか」のカード */
+.cards { display:grid; gap:14px; }
+.card { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:0 8px 8px 0;
+  background:var(--card); padding:14px 18px; }
+.card.risk { border-left-color:var(--danger-line); background:var(--danger-bg); }
+.card.trap { border-left-color:var(--warn-line); background:var(--warn-bg); }
+.card-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.card-title { font-weight:700; font-size:14.5px; }
+.ref { font-size:11px; color:var(--muted); margin-left:auto; font-family:ui-monospace,Menlo,monospace; }
+.card-body { margin-top:9px; font-size:13.5px; }
+.why { margin-top:9px; padding-top:9px; border-top:1px dashed var(--line); font-size:13px; }
+.why b { color:var(--accent); }
+.card.risk .why b { color:var(--danger-line); }
+.card.trap .why b { color:var(--warn-line); }
+
+/* 識別子バッジ。チャットでの深掘り依頼に使う */
+.id { font-family:ui-monospace,Menlo,monospace; font-size:11px; font-weight:700;
+  background:var(--fg); color:var(--bg); border-radius:4px; padding:2px 7px; }
+
+/* 表 */
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:11.5px; color:var(--muted); letter-spacing:.06em; font-weight:700; }
+td.ch { font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:700; }
+.pri { display:inline-block; font-size:10.5px; font-weight:700; border-radius:4px; padding:2px 7px; white-space:nowrap; }
+.p-must { background:var(--danger-bg); color:var(--danger-line); }
+.p-work { background:var(--warn-bg); color:var(--warn-line); }
+.p-skim { background:var(--tag-bg); color:var(--muted); }
+
+/* 書き込み先の対応表（API × テーブルなど） */
+.matrix { width:100%; border-collapse:separate; border-spacing:0; font-size:12.5px; }
+.matrix th, .matrix td { border-bottom:1px solid var(--line); padding:9px 8px; text-align:center; }
+.matrix th.api { text-align:left; width:250px; }
+.matrix td.tbl { text-align:left; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+.matrix thead th { font-size:11px; color:var(--muted); font-weight:700; vertical-align:bottom; line-height:1.35; }
+.op { display:inline-block; font-size:10px; font-weight:800; border-radius:4px; padding:2px 6px; color:#fff; }
+.op-i { background:var(--ins); } .op-u { background:var(--upd); } .op-d { background:var(--del); }
+.dash { color:var(--line); }
+.untouched td { opacity:.55; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-bottom:12px; }
+
+/* Mermaid の図 */
+.mermaid-box { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:14px; overflow-x:auto; }
+.mermaid { text-align:center; }
+.mermaid svg { max-width:none; height:auto; }
+.figcap { color:var(--muted); font-size:12.5px; margin-top:8px; }
+
+/* コード表示 */
+pre.code { background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px;
+  overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.65; margin:0; }
+pre.code .ln { color:var(--muted); user-select:none; }
+pre.code .hi { background:var(--warn-bg); display:inline-block; width:100%; }
+pre.code .cmt { color:var(--muted); }
+pre.code .kw { color:var(--accent); }
+code { background:var(--code-bg); border-radius:4px; padding:1px 5px;
+  font-family:ui-monospace,Menlo,monospace; font-size:.88em; }
+
+/* 強調ブロック */
+.box { border-left:4px solid var(--danger-line); background:var(--danger-bg); border-radius:0 8px 8px 0; padding:14px 18px; }
+.box.ok { border-left-color:var(--ok-line); background:var(--ok-bg); }
+.box.warn { border-left-color:var(--warn-line); background:var(--warn-bg); }
+.box .h { font-weight:700; margin-bottom:6px; }
+
+/* 末尾の案内 */
+.ask { margin-top:56px; border:1px dashed var(--line); border-radius:8px; padding:16px 20px;
+  background:var(--card); font-size:13px; color:var(--muted); }
+.ask b { color:var(--fg); }
+
+@media (max-width:720px) {
+  .step { grid-template-columns:38px 1fr; }
+  .tx { grid-column:2; justify-self:start; }
+  .ref { margin-left:0; width:100%; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ここに本文を書く。使えるパーツは上のCSSのコメントを参照 -->
+  <header class="top">
+  <div class="eyebrow">IMPLEMENTATION PLAN · ISSUE #2</div>
+  <h1>Discord AIエージェント会社 — 実装計画 v1</h1>
+  <div class="stats">
+    <span class="stat"><b>CTOレビュー</b> 承認</span>
+    <span class="stat"><b>受入条件</b> 17 / 17 covered</span>
+    <span class="stat"><b>計画修正</b> 3回</span>
+    <span class="stat"><b>初期Bot</b> 4体 → 8役</span>
+  </div>
+  <div class="src">source: docs/work-items/issue-2/plans/v1.md · sha256 412d2c35…39db2</div>
+</header>
+
+<div class="tldr">
+  <p><b>一言でいうと</b></p>
+  <p>今ある安全なPR・CI・承認機構を残し、GitHub Issue正本、独立した計画承認、話題別Discordスレッド、8役の役割台帳、秘密情報の遮断をv2として段階的に足します。</p>
+</div>
+
+<div class="headline">
+  <div class="h">計画を承認しても、既存運用はすぐ切り替わりません</div>
+  <div>承認後は専用ブランチで実装し、最初は discord-agent-team と検証カテゴリだけで動かします。全17件と運用条件を確認してから、新しい正式依頼の標準をv2へ切り替えます。</div>
+</div>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">01</span><h2>今回の実装で変わるところ</h2></div>
+  <table>
+    <thead><tr><th>現在</th><th>実装後</th><th>守るもの</th></tr></thead>
+    <tbody>
+      <tr><td class="ch">DB仕様が正本</td><td>GitHub Issue本文が唯一の要件正本</td><td>ハッシュ・更新情報・承認だけをDB監査</td></tr>
+      <tr><td class="ch">要件承認 → 実装</td><td>計画作成 → 別CTOレビュー → 計画承認を追加</td><td>未承認のコード生成を禁止</td></tr>
+      <tr><td class="ch">専門役3種を固定</td><td>初期8役、10役以上へ拡張可能な台帳</td><td>現在の4 Botを互換対応</td></tr>
+      <tr><td class="ch">案件に1スレッド</td><td>リポジトリ別チャンネル＋話題別スレッド</td><td>Bot投稿は表示だけ、型付きイベントで実行</td></tr>
+      <tr><td class="ch">案件上限10・並列3</td><td>案件30、相談15/論点5、通常並列4</td><td>同repo書込とSRE特権は直列</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">02</span><h2>実装する4段階</h2></div>
+  <p class="lead">各段階でテストする。第3段階では限定試験だけを行い、第4段階の安全機構まで確認して標準化する。</p>
+  <div class="flow">
+    <div class="step"><div class="step-n">1</div><div><div class="step-title">案件状態・Issue正本・役割台帳</div><div class="step-desc">明示migration、v1/v2分離、Issueの条件付き更新、初期8役を実装。</div></div><div class="tx tx-write">基礎データ</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">2</div><div><div class="step-title">要件定義・内部相談・説明</div><div class="step-desc">CTOの要件フロー、相談上限、秘密検査、要件説明と承認を接続。</div></div><div class="tx tx-write">理解ゲート</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">3</div><div><div class="step-title">計画・レビュー・実装・PR</div><div class="step-desc">計画承認後の新セッション、Draft PR、独立レビュー、最新SHA承認を検証。</div></div><div class="tx tx-none">限定v2試験</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">4</div><div><div class="step-title">SRE運用・滞留復旧・追加Bot</div><div class="step-desc">全安全機構を現在4 Botで確認後にv2を標準化。残り4 Botは一役ずつ有効化。</div></div><div class="tx tx-read">全ACで判定</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">03</span><h2>システムの境界</h2></div>
+  <div class="layers">
+    <div class="layer"><div class="layer-name">Discord · 人とBotの会話</div><div class="layer-role">自然文受付、話題別スレッド、相互メンション、承認、案件状態メッセージ</div></div>
+    <div class="dep-note">↓ Discord本文は検査し、型付きイベントへ変換</div>
+    <div class="layer"><div class="layer-name">制御層 · 実行と安全の決定者</div><div class="layer-role">状態機械、承認、予算、role選定、secret scan、outbox、repository lock</div></div>
+    <div class="dep-note">↓ 検査済み入力だけを一時セッションへ</div>
+    <div class="layer"><div class="layer-name">モデルworker · 資格情報なし</div><div class="layer-role">型付きの読取要求・command要求・patch案を返す。repositoryやhost toolを直接mountしない</div></div>
+    <div class="dep-note">↓ trusted adapterだけが外部操作</div>
+    <div class="layer"><div class="layer-name">GitHub / Discord / Renderer</div><div class="layer-role">publisher・reviewer・merger・SREを分離。説明rendererはnetworkと資格情報なし</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">04</span><h2>承認と書き込みの順序</h2></div>
+  <div class="flow">
+    <div class="step gate"><div class="step-n">A</div><div><div class="step-title">要件版を承認</div><div class="step-desc">Issue番号・updated_at・本文hash・一回限りの確認IDを固定。</div></div><div class="tx tx-read">承認 1</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">B</div><div><div class="step-title">レビュー済み計画版を承認</div><div class="step-desc">計画hash・base SHA・説明artifactのsource identityを照合。</div></div><div class="tx tx-read">承認 2</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">C</div><div><div class="step-title">最終索引commit → 独立review → CI</div><div class="step-desc">案件READMEと受入証跡を含む最後のheadを作り、repository書き込みを凍結。</div></div><div class="tx tx-write">head確定</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">D</div><div><div class="step-title">最新SHAを承認してSquash merge</div><div class="step-desc">承認記録はDB・Issue・Discordへ保存し、PR headを変えない。head変更時は再レビュー。</div></div><div class="tx tx-read">承認 3</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">05</span><h2>モデルへ秘密を渡さない実行方式</h2></div>
+  <div class="flow">
+    <div class="step"><div class="step-n">1</div><div><div class="step-title">モデルが型付き要求を返す</div><div class="step-desc">必要なpath、固定argvのtest、patch案をまとめて要求する。</div></div><div class="tx tx-read">資格情報なし</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">2</div><div><div class="step-title">制御層が一時copyで実行</div><div class="step-desc">allowlist、MIME、path、Sandbox、secret patternを決定論的に検査する。</div></div><div class="tx tx-none">command broker</div></div>
+    <div class="arrow">↓</div>
+    <div class="step gate"><div class="step-n">3</div><div><div class="step-title">結果をモデル返却前に検査</div><div class="step-desc">file内容、stdout、stderrに秘密を検出したら値を残さずblockedにする。</div></div><div class="tx tx-read">事前遮断</div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">4</div><div><div class="step-title">新しい一時セッションへ渡す</div><div class="step-desc">検査済み結果だけで続行。binaryと説明PNGはGitに保持し、内容はモデルへ渡さない。</div></div><div class="tx tx-write">30回に計上</div></div>
+  </div>
+  <div class="box warn" style="margin-top:16px"><div class="h">なぜ現行のshell直結を変えるのか</div><div>同じCodexセッション内のshell出力は、制御層が途中検査できません。v2ではtool実行を制御層へ戻し、検査後に次の一時セッションへ渡します。</div></div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">06</span><h2>主な永続データ</h2></div>
+  <table>
+    <thead><tr><th>記録</th><th>守るもの</th></tr></thead>
+    <tbody>
+      <tr><td class="ch">RequirementsReference / PlanVersion</td><td>Issue本文は複製せず、要件hashとIssue内通算の計画版を固定</td></tr>
+      <tr><td class="ch">ApprovalGrant</td><td>工程、対象hash/SHA、承認者、期限、一回限りの確認ID</td></tr>
+      <tr><td class="ch">ExecutionBudget</td><td>案件30、相談15/論点5、計画修正3、実装修正3を原子的に予約</td></tr>
+      <tr><td class="ch">Delegation / TopicThread</td><td>型付き依頼、Bot会話message ID、判断comment、24時間後のarchive</td></tr>
+      <tr><td class="ch">ProjectWorkspace / TaskProjection</td><td>repository別channelと、案件別status messageを分離</td></tr>
+      <tr><td class="ch">RepositoryLease</td><td>同じrepositoryのwrite jobを直列化。通常read-onlyは最大4並列</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">07</span><h2>中心となる設計判断</h2></div>
+  <div class="cards">
+    <div class="card"><div class="card-head"><span class="id">D-01</span><span class="card-title">v1とv2を状態ごと分離する</span><span class="ref">AC-07, 11, 17</span></div><div class="card-body">既存行はworkflow version 1、新規の限定対象だけversion 2。進行中案件を自動移行しない。</div><div class="why"><b>なぜ:</b> 大きな変更を導入しても、現在動く案件を途中で壊さないため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-02</span><span class="card-title">GitHub Issue更新は条件付きにする</span><span class="ref">AC-02, 07</span></div><div class="card-body">ETagによる更新競合を実環境で事前検証。保証できない環境では自動PATCHを止め、提案commentからowner反映を待つ。</div><div class="why"><b>なぜ:</b> 比較直後に人が編集しても、その内容をBotが上書きしないため。</div></div>
+    <div class="card risk"><div class="card-head"><span class="id">D-03</span><span class="card-title">tool実行をモデルsessionから分離する</span><span class="ref">AC-09</span></div><div class="card-body">モデルは型付き要求を返し、制御層が実行・検査する。検査前の結果はモデルへ返さない。</div><div class="why"><b>なぜ:</b> repositoryだけでなく、実行時に作られたstdoutやfileもモデルの手前で遮断するため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-04</span><span class="card-title">Issue内で計画版を通算する</span><span class="ref">AC-11, 15</span></div><div class="card-body">中止後は新task・新branch・次の計画版にし、READMEから旧branchとcommitへ辿れるようにする。</div><div class="why"><b>なぜ:</b> 再開でv1.mdや過去の承認を上書き・再利用しないため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-05</span><span class="card-title">マージ承認前にbranchを凍結する</span><span class="ref">AC-06, 07</span></div><div class="card-body">最終索引commit後にreviewとCIをやり直し、承認後の状態通知はbranch外へ保存する。</div><div class="why"><b>なぜ:</b> 承認記録のcommitで承認対象SHAが変わる無限ループを防ぐため。</div></div>
+    <div class="card"><div class="card-head"><span class="id">D-06</span><span class="card-title">役割は台帳、実行は能力で選ぶ</span><span class="ref">AC-12, 16</span></div><div class="card-body">初期8役を登録し、2〜4役を選択。停止時は同等能力かつ権限が強くない役だけを代替にする。</div><div class="why"><b>なぜ:</b> 10役以上へ増やしても固定分岐と権限の膨張を避けるため。</div></div>
+    <div class="card trap"><div class="card-head"><span class="id">D-07</span><span class="card-title">全面DDD化は今回行わない</span><span class="ref">Issue #1</span></div><div class="card-body">境界が明確なmoduleは追加するが、既存のstate machineとengineを段階的に拡張する。</div><div class="why"><b>なぜ:</b> フロー変更と大規模再編を同時に行うリスクを避け、動く単位で検証するため。</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">08</span><h2>完了条件の見方</h2></div>
+  <table>
+    <thead><tr><th>まとまり</th><th>確認する結果</th><th>AC</th></tr></thead>
+    <tbody>
+      <tr><td class="ch">受付と理解</td><td>自然文、Issue、必要な質問、要件と計画の説明・承認</td><td>01〜05</td></tr>
+      <tr><td class="ch">実装と安全</td><td>独立review、CI、承認失効、実行上限、秘密遮断</td><td>06〜09</td></tr>
+      <tr><td class="ch">運用</td><td>SRE準備、障害停止、役割台帳、並列とwrite lock</td><td>10〜13</td></tr>
+      <tr><td class="ch">Discord会社体験</td><td>Bot相互mention、thread履歴、停止role代替、4 Bot完走</td><td>14〜17</td></tr>
+    </tbody>
+  </table>
+  <div class="box ok" style="margin-top:16px"><div class="h">CTOレビュー結果</div><div>3回の修正で15件の指摘を解消し、最終確認ではAC-01〜AC-17がすべてcovered、未解決のcritical/high/medium findingは0件でした。</div></div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">09</span><h2>承認前に残る実装上のリスク</h2></div>
+  <div class="cards">
+    <div class="card trap"><div class="card-head"><span class="id">Q-01</span><span class="card-title">GitHubが条件付きIssue更新を保証するかは実環境確認が必要</span></div><div class="card-body">preflightで保証できなければ自動更新を停止するため、安全側に倒れるが要件更新にowner作業が増える。</div></div>
+    <div class="card trap"><div class="card-head"><span class="id">Q-02</span><span class="card-title">tool broker方式はモデル呼び出し数を使う</span></div><div class="card-body">読取・test・patchをbatchして30回以内に収める。上限到達時は継続せず判断材料を返す。</div></div>
+    <div class="card"><div class="card-head"><span class="id">Q-03</span><span class="card-title">追加4 Botは実装完了と同時には会話を始めない</span></div><div class="card-body">UI・UX、QA、評価、アナリストは接続口まで作り、App・token・権限を一役ずつ確認して有効にする。</div></div>
+    <div class="card risk"><div class="card-head"><span class="id">Q-04</span><span class="card-title">保護ファイルは通常実装workerに変更させない</span></div><div class="card-body">今回のbootstrapだけ、計画承認後のtrusted maintainerが個別allowlistで変更し、CTO・セキュリティreviewと最新SHA承認を通す。</div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><span class="section-num">10</span><h2>戻し方</h2></div>
+  <div class="box ok"><div class="h">v2受付を止め、記録を残す</div><div>v2 feature flagをoffにし、実行中jobをfenceして停止します。migration後は旧binaryへ戻さず、v2対応binaryでv1だけを継続します。Issue、branch、PR、成果物、監査ログは削除しません。再開は新task・新branch・新しい要件承認から始めます。</div></div>
+</section>
+
+<div class="ask"><b>深掘りできます:</b> 「D-03を詳しく」「Q-02で30回をどう使う？」のように識別子を指定してください。計画原文は <code>docs/work-items/issue-2/plans/v1.md</code> です。</div>
+
+
+</div>
+
+<!-- 検証スクリプトがページ全体の高さを知るための出力。表示には影響しないので削除しない -->
+<script>
+  const reportHeight = () => {
+    document.body.dataset.pageHeight = String(document.documentElement.scrollHeight);
+  };
+  document.addEventListener('DOMContentLoaded', reportHeight);
+  window.reportPageHeight = reportHeight;
+</script>
+
+</body>
+</html>

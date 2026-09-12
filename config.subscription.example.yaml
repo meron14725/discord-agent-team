@@ -23,7 +23,7 @@ repos:
     checks:
       - {name: tests, app_id: 15368} # Verified GitHub Actions issuer on the template's successful CI.
     test_commands: [[python3, -m, unittest, discover, -s, tests]]
-    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*']
+    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*', 'docs/work-items/*']
 daily_run_limit: 30 # Local run cap, not the subscription's official quota.
 task_run_limit: 10
 max_rounds: 3

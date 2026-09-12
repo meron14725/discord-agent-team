@@ -24,7 +24,9 @@ class Repo(BaseModel):
     reviewer_login: str = "agent-reviewer[bot]"
     checks: list[Check] = Field(default_factory=list)
     test_commands: list[list[str]] = Field(default_factory=lambda: [["python", "-m", "unittest", "discover"]])
-    allowed_paths: list[str] = Field(default_factory=lambda: ["src/*", "tests/*", "docs/tasks/*"])
+    allowed_paths: list[str] = Field(
+        default_factory=lambda: ["src/*", "tests/*", "docs/tasks/*", "docs/work-items/*"]
+    )
 
 
 class ReviewerApp(BaseModel):

@@ -14,7 +14,7 @@ repos:
     checks:
       - {name: tests, app_id: 1} # Replace with actual check name AND issuer GitHub App ID.
     test_commands: [[python, -m, unittest, discover]]
-    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*']
+    allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*', 'docs/work-items/*']
 auth_mode: chatgpt
 model: '' # Subscription CLI default; pin an available model if desired.
 daily_run_limit: 30

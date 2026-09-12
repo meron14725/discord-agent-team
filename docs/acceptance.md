@@ -1,6 +1,6 @@
 # 検証結果と残作業
 
-2026-09-13。**Issue #2のv2フローはmock E2Eと境界テストまで完了した。実Discord/GitHubでの限定受入試験前なので、v2 feature flagは無効のままにする。**
+2026-09-13。**Issue #2のv2フローを`project` aliasで有効化した。DB schema v2、renderer、orchestrator、Discord gateway、host v2 worker（容量4）は稼働中。既存案件はworkflow v1のまま維持した。実案件の全工程受入試験はこれから行う。**
 
 ## 実行結果
 
@@ -47,7 +47,7 @@
 ## 既知の未対応事項
 
 - 役割台帳は初期8役、10役以上へ拡張可能。Discordへ接続済みなのは4 Botで、フロントエンド・UX、QA、評価管理、調査・分析のtoken作成と一役ずつの実接続試験が残る。
-- Issue #2のv2は既定無効。専用test IssueでGitHubの古いETag更新拒否を確認し、検証カテゴリと非公開test repositoryでAC-01〜AC-17を実測してから限定有効化する。
+- Issue #2のv2は`project`で有効。GitHub Issue PATCHは条件付き更新に非対応だったため、要件案をIssueコメントへ提示し、オーナーが本文へ反映後に保存済みhashを再照合する。非公開test repositoryでAC-01〜AC-17の実測が残る。
 - 説明rendererは資格情報なし・内部networkのみのComposeサービスとして構成済み。実コンテナでのHTML/PNG添付確認が残る。
 - 実DiscordとCodexログインは検証済み。GitHubの実案件全工程、CIと保護ルールの契約プラン上の適用可否は未検証。
 - 新repoのCI・ブランチ保護・レビューApp導入の自動設定。テンプレートとホスト側運用が必要。

@@ -2,8 +2,10 @@
 
 ## 現在の状態
 
-コードとmock E2Eは実装済みで、実運用設定では`workflow_v2.enabled: false`を維持する。
-既存v1案件は移行せず、そのまま完了させる。v2はrepository aliasのallowlistに入った新規案件だけを対象にする。
+2026-09-13に実運用設定で`workflow_v2.enabled: true`へ移行した。現在は`project` aliasをallowlistとし、最初の案件チャンネルにはgeneralを割り当てている。
+既存v1案件は移行せず、そのまま完了させる。v2はallowlistに入った新規案件だけを対象にする。
+
+移行前バックアップは`backups/pre-v2-20260913`。schema migration version 1・2、Dockerの4サービス、launchdの6 worker、統括Botによる完了通知を確認した。
 
 ## 1案件の流れ
 

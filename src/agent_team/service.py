@@ -283,12 +283,36 @@ class TaskService:
                 expected = "Paused" if action == "resume" else "Blocked"
                 if task.state != expected:
                     raise GuardError(f"Expected {expected}")
-                recoverable = s.scalar(
-                    select(Job)
-                    .where(Job.task_id == task.id, Job.status == "failed")
-                    .order_by(Job.created.desc())
-                )
                 if (
+                    task.workflow_version == 2
+                    and action == "retry"
+                    and task.data.get("requirements_proposal_hash")
+                ):
+                    proposal_job = s.scalar(
+                        select(Job)
+                        .where(
+                            Job.task_id == task.id,
+                            Job.kind == "draft_requirements",
+                            Job.status == "done",
+                        )
+                        .order_by(Job.created.desc())
+                    )
+                    if proposal_job is None or not proposal_job.data.get("response"):
+                        raise GuardError("Saved requirements proposal is unavailable")
+                    proposal_job.status = "queued"
+                    proposal_job.attempt = 0
+                    proposal_job.owner = ""
+                    transition(s, task, "DraftingRequirements", "Issue本文へ反映された要件案を再照合")
+                    recoverable = None
+                else:
+                    recoverable = s.scalar(
+                        select(Job)
+                        .where(Job.task_id == task.id, Job.status == "failed")
+                        .order_by(Job.created.desc())
+                    )
+                if task.state == "DraftingRequirements":
+                    pass
+                elif (
                     action == "retry"
                     and recoverable
                     and recoverable.data.get("response")

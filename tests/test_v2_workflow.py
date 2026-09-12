@@ -307,6 +307,41 @@ def test_engine_runs_v2_end_to_end_with_two_early_approval_gates(team):
         assert delegation.status == "completed"
 
 
+def test_v2_safe_issue_proposal_resumes_from_saved_result_after_owner_applies_it(team):
+    settings, db, github, service, engine, command = team
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    settings.workflow_v2.requirements_approver_ids = ["demo-owner"]
+    settings.workflow_v2.github_issue_conditional_updates = False
+
+    task = command("request", repo="demo", text="安全なIssue更新")
+    step(engine)
+    blocked = service.status(task["id"])
+    assert blocked["state"] == "Blocked"
+    assert blocked["data"]["requirements_proposal_hash"]
+
+    issue_number = blocked["data"]["requirements_issue"]
+    comments = github.read(f"issue-comments:{issue_number}")
+    proposed_body = comments[-1]["body"].split("\n\n", 1)[1]
+    current = github.issue_reference(settings.repos["demo"], issue_number)
+    github.update_issue_body(
+        settings.repos["demo"],
+        issue_number,
+        proposed_body,
+        expected_etag=current["etag"],
+        preflight_confirmed=True,
+    )
+
+    command("retry", task_id=task["id"])
+    step(engine)
+    resumed = service.status(task["id"])
+    assert resumed["state"] == "AwaitingRequirementsConfirmation"
+    with db.transaction() as session:
+        jobs = list(session.scalars(select(Job).where(Job.task_id == task["id"])))
+        assert len(jobs) == 1
+        assert jobs[0].attempt == 1
+
+
 def test_v2_outbox_projects_one_status_message_and_topic_thread(team):
     settings, db, _, service, engine, command = team
     settings.workflow_v2.enabled = True

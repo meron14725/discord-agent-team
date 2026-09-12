@@ -23,7 +23,7 @@
 
 1. DBをバックアップし、`agent-team migrate`後のschema version 2を確認する。
 2. `renderer`、orchestrator、現在の4 Bot、役別workerのhealthを確認する。
-3. 専用test Issueで、別編集後の古いETagを使う更新が拒否され、別編集の本文が残ることを確認する。確認できるまで`github_issue_conditional_updates: false`にする。
+3. `github_issue_conditional_updates: false`を維持する。GitHub.comのIssue PATCHは安全な条件付き更新に対応しないため、CTOがコメントへ出した要件案をオーナーがIssue本文へ反映し、Discordで再試行する。
 4. repository別DiscordチャンネルIDを`project_channels`へ設定する。
 5. 要件・計画承認者を通常会話の`owner_ids`とは別に指定する。
 6. `merge_mode: disabled`のまま、検証カテゴリと非公開test repositoryだけで一周させる。

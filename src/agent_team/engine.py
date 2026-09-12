@@ -704,40 +704,57 @@ class Engine:
                 )
             current = self.github.issue_reference(repo, task.data["requirements_issue"])
             if not self.settings.workflow_v2.github_issue_conditional_updates:
-                self.external(
+                if current["body_hash"] != digest(body):
+                    proposal = self.external(
+                        job_id,
+                        fence,
+                        "requirements_proposal",
+                        digest(body),
+                        lambda task, key: self.github.comment_issue(
+                            repo,
+                            task.data["requirements_issue"],
+                            f"要件本文の変更案 `{digest(body)}`\n\n{body}",
+                        ),
+                    )
+                    with self.db.transaction() as session:
+                        task, job = self.current(session, job_id, fence)
+                        task.data = {
+                            **task.data,
+                            "requirements_proposal_hash": digest(body),
+                            "requirements_proposal_url": proposal["url"],
+                        }
+                        job.status = "done"
+                        self.release_repository_lease(session, job)
+                        transition(
+                            session,
+                            task,
+                            "Blocked",
+                            "Issueコメントの要件案を本文へ反映後、再試行してください。",
+                        )
+                        notify(
+                            session,
+                            task,
+                            "GitHubはIssue更新の安全な条件付きPATCHに対応していません。"
+                            "コメントの要件案をIssue本文へ反映し、Discordで再試行してください。",
+                            role="cto",
+                            mention_owner=True,
+                        )
+                    return
+                updated = current
+            else:
+                updated = self.external(
                     job_id,
                     fence,
-                    "requirements_proposal",
+                    "requirements_update",
                     digest(body),
-                    lambda task, key: self.github.comment_issue(
+                    lambda task, key: self.github.update_issue_body(
                         repo,
                         task.data["requirements_issue"],
-                        f"要件本文の変更案 `{digest(body)}`\n\n{body}",
+                        body,
+                        expected_etag=current["etag"],
+                        preflight_confirmed=True,
                     ),
                 )
-                with self.db.transaction() as session:
-                    task, job = self.current(session, job_id, fence)
-                    job.status = "done"
-                    transition(
-                        session,
-                        task,
-                        "Blocked",
-                        "GitHubの条件付き更新が未検証です。Issueコメントの案を本文へ反映してください。",
-                    )
-                return
-            updated = self.external(
-                job_id,
-                fence,
-                "requirements_update",
-                digest(body),
-                lambda task, key: self.github.update_issue_body(
-                    repo,
-                    task.data["requirements_issue"],
-                    body,
-                    expected_etag=current["etag"],
-                    preflight_confirmed=True,
-                ),
-            )
             with self.db.transaction() as session:
                 task, job = self.current(session, job_id, fence)
                 explanation_hash = self.store_explanation(

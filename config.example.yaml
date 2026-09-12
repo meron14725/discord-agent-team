@@ -176,7 +176,7 @@ workflow_v2:
   requirements_approver_ids: []
   plan_approver_ids: []
   project_channels: {} # リポジトリ別チャンネル: {demo: '123456789012345678'}
-  github_issue_conditional_updates: false # 専用Issueで古いETagが412になることを確認後だけtrue。
+  github_issue_conditional_updates: false # GitHub.comのIssue PATCHは条件付き更新非対応。falseを維持する。
   normal_concurrency: 4
   privileged_concurrency: 1
   model_calls_per_task: 30

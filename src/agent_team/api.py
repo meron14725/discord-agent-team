@@ -4,11 +4,10 @@ import hmac
 import json
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from .adapters.codex import MockRunner, RemoteRunner
@@ -28,6 +27,7 @@ from .db import Database, Event, Job, Outbox, Task, task_lock
 from .discord_sre import DiscordChangeService
 from .engine import Engine
 from .policy import GuardError
+from .prompt_context import load_agent_prompt_context
 from .service import TaskService
 
 
@@ -62,8 +62,20 @@ class SpecialistCommand(CoordinateCommand):
     role: SpecialistRole
     instruction: str = Field(min_length=1, max_length=1500)
     discord_snapshot: DiscordPlatformSnapshot | None = None
-    handoff_depth: Literal[0, 1] = 0
+    handoff_depth: Literal[0, 1, 2] = 0
+    handoff_round: int = Field(default=0, ge=0, le=2)
+    handoff_source_roles: list[SpecialistRole] = Field(default_factory=list, max_length=2)
     visited_roles: list[SpecialistRole] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def handoff_state_matches_depth(self):
+        if self.handoff_depth == 0 and (self.handoff_round or self.handoff_source_roles):
+            raise ValueError("Initial specialist turn cannot include handoff dialogue state")
+        if self.handoff_depth == 1 and not self.handoff_source_roles:
+            raise ValueError("Handoff recipient requires source roles")
+        if self.handoff_depth == 2 and self.handoff_source_roles:
+            raise ValueError("Handoff answer cannot include source roles")
+        return self
 
 
 class DiscordChangeProposal(BaseModel):
@@ -160,10 +172,7 @@ def create_app(db=None, settings=None, token=None):
         db = Database(url)
     db.migrate()
     token = token or secret("INTERNAL_TOKEN")
-    memory_path = Path(os.environ.get("COMPANY_MEMORY", "prompts/company-memory.md"))
-    company_memory = memory_path.read_text() if memory_path.is_file() else ""
-    if len(company_memory) > 30_000:
-        raise ValueError("Company memory exceeds 30000 characters")
+    prompt_context = load_agent_prompt_context()
     service = TaskService(db, settings)
     discord_changes = DiscordChangeService(db, settings)
     github = (
@@ -248,7 +257,9 @@ def create_app(db=None, settings=None, token=None):
                             "sre": "Discord・実行基盤・運用・障害対応",
                         },
                         "default_repository_alias": settings.default_repo,
-                        "trusted_company_memory": company_memory,
+                        "trusted_company_memory": prompt_context.company_memory,
+                        "trusted_company_policy": prompt_context.company_policy,
+                        "trusted_role_policies": prompt_context.role_policies,
                     },
                     ensure_ascii=False,
                 ),
@@ -315,8 +326,18 @@ def create_app(db=None, settings=None, token=None):
                         "recent_discord_context_oldest_first": command.history,
                         "delegated_goal": command.instruction,
                         "handoff_policy": {
-                            "depth": command.handoff_depth,
-                            "allowed": command.handoff_depth == 0,
+                            "mode": {0: "initial", 1: "recipient", 2: "answer"}[
+                                command.handoff_depth
+                            ],
+                            "round_trips_used": command.handoff_round,
+                            "round_trips_remaining": (
+                                2 - command.handoff_round if command.handoff_depth == 1 else 0
+                            ),
+                            "allowed": command.handoff_depth == 0
+                            or (command.handoff_depth == 1 and command.handoff_round < 2),
+                            "allowed_target_roles": (
+                                command.handoff_source_roles if command.handoff_depth == 1 else []
+                            ),
                             "visited_roles": sorted(set(command.visited_roles) | {command.role}),
                             "maximum_targets": 2,
                         },
@@ -327,10 +348,14 @@ def create_app(db=None, settings=None, token=None):
                             "sre": "Discord管理・実行基盤・監視・障害対応・安全な運用",
                         },
                         "discord_change_plan_required": (
-                            command.role == "sre" and requests_discord_change(command.text)
+                            command.role == "sre"
+                            and command.handoff_depth != 2
+                            and requests_discord_change(command.text)
                         ),
                         "trusted_platform_snapshot": snapshot,
-                        "trusted_company_memory": company_memory,
+                        "trusted_company_memory": prompt_context.company_memory,
+                        "trusted_company_policy": prompt_context.company_policy,
+                        "trusted_role_policy": prompt_context.role_policies[command.role],
                     },
                     ensure_ascii=False,
                 ),
@@ -341,7 +366,11 @@ def create_app(db=None, settings=None, token=None):
             )
             response = await runner.run(request)
             decision = response.result.specialist
-            plan_required = command.role == "sre" and requests_discord_change(command.text)
+            plan_required = (
+                command.role == "sre"
+                and command.handoff_depth != 2
+                and requests_discord_change(command.text)
+            )
             if plan_required and (
                 decision.action != "request_approval" or decision.sre_plan is None
             ):
@@ -365,6 +394,8 @@ def create_app(db=None, settings=None, token=None):
             if decision.sre_plan is not None:
                 if command.role != "sre":
                     raise GuardError("Discord SRE plans are restricted to the SRE role")
+                if command.handoff_depth == 2:
+                    raise GuardError("Internal handoff answers cannot propose Discord changes")
                 if not requests_discord_change(command.text):
                     raise GuardError("Discord SRE changes require an explicit owner request")
                 if decision.sre_plan.guild_id != command.guild:
@@ -373,6 +404,8 @@ def create_app(db=None, settings=None, token=None):
                 decision,
                 source_role=command.role,
                 handoff_depth=command.handoff_depth,
+                handoff_round=command.handoff_round,
+                handoff_source_roles=command.handoff_source_roles,
                 visited_roles=command.visited_roles,
             )
         except GuardError as error:

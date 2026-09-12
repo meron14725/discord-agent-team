@@ -76,6 +76,8 @@ Python、FastAPI、SQLAlchemy、PostgreSQL、discord.py、Codex CLI 0.154.0、Do
 DB状態更新とoutboxは同一トランザクション。ジョブはリース・fencing・仕様版を照合。
 GitHubの書き込みは制御側のRESTアダプターのみが行い、実行ワーカーにはGitHub/Bot/DB資格情報を渡しません。
 
+エージェント規則は、全役に優先適用する `prompts/company-policy.md`、会社の現状と役割一覧を持つ `prompts/company-memory.md`、各役だけに適用する `prompts/roles/*.md` に分けています。役割別規則は会社共通規則を弱めたり上書きしたりできません。[規則の分類と変更方法](docs/agent-rules.md)。
+
 ```sh
 uv sync --frozen
 uv run pytest -q

@@ -443,6 +443,8 @@ async def serve():
                             delegated,
                             *,
                             handoff_depth=0,
+                            handoff_round=0,
+                            handoff_source_roles=None,
                             visited_roles=None,
                             handoff_context="",
                         ):
@@ -464,7 +466,7 @@ async def serve():
                                             json={
                                                 "event_id": (
                                                     f"{message.id}-{delegated['role']}-"
-                                                    f"{handoff_depth}-{attempt}"
+                                                    f"{handoff_depth}-{handoff_round}-{attempt}"
                                                 ),
                                                 "actor": str(message.author.id),
                                                 "guild": str(message.guild.id),
@@ -474,6 +476,8 @@ async def serve():
                                                 "role": delegated["role"],
                                                 "instruction": delegated["instruction"],
                                                 "handoff_depth": handoff_depth,
+                                                "handoff_round": handoff_round,
+                                                "handoff_source_roles": handoff_source_roles or [],
                                                 "visited_roles": visited_roles or initial_roles,
                                                 "discord_snapshot": (
                                                     await sre_platform_snapshot(message.guild.id)
@@ -527,19 +531,60 @@ async def serve():
                                 *initial_roles,
                                 *(followup.role for followup in followups),
                             ]
-                            await asyncio.gather(
-                                *(
-                                    specialist_turn(
+
+                            async def run_handoff_dialogue(followup):
+                                context = followup.context
+                                source_roles = list(followup.source_roles)
+                                for round_trip in range(3):
+                                    recipient_result = await specialist_turn(
                                         {
                                             "role": followup.role,
                                             "instruction": followup.instruction,
                                         },
                                         handoff_depth=1,
+                                        handoff_round=round_trip,
+                                        handoff_source_roles=source_roles,
                                         visited_roles=all_visited,
-                                        handoff_context=followup.context,
+                                        handoff_context=context,
                                     )
-                                    for followup in followups
-                                )
+                                    if recipient_result is None:
+                                        return
+                                    _, recipient_decision = recipient_result
+                                    if recipient_decision.action != "handoff":
+                                        return
+                                    answers = await asyncio.gather(
+                                        *(
+                                            specialist_turn(
+                                                {
+                                                    "role": question.role,
+                                                    "instruction": question.instruction,
+                                                },
+                                                handoff_depth=2,
+                                                handoff_round=round_trip,
+                                                visited_roles=all_visited,
+                                                handoff_context=(
+                                                    f"{followup.role}からの確認理由: "
+                                                    f"{question.reason}"
+                                                ),
+                                            )
+                                            for question in recipient_decision.handoffs
+                                        )
+                                    )
+                                    answer_context = []
+                                    for answer in answers:
+                                        if answer is not None:
+                                            answer_role, answer_dec = answer
+                                            answer_context.append(
+                                                f"{answer_role}からの回答: {answer_dec.reply}"
+                                            )
+                                    if not answer_context:
+                                        return
+                                    context = "\n".join(
+                                        [context, recipient_decision.reply, *answer_context]
+                                    )[-20_000:]
+
+                            await asyncio.gather(
+                                *(run_handoff_dialogue(followup) for followup in followups)
                             )
             except Exception:
                 log.exception("Coordinator message handling failed")

@@ -48,12 +48,14 @@ def test_handoff_contract_discards_unused_task_and_approval_text():
     assert normalized.approval_reason == ""
 
 
-def test_control_layer_rejects_self_duplicate_and_second_level_handoffs():
+def test_control_layer_rejects_self_and_duplicate_initial_handoffs():
     with pytest.raises(GuardError, match="itself"):
         validate_specialist_handoffs(
             handoff("upstream"),
             source_role="upstream",
             handoff_depth=0,
+            handoff_round=0,
+            handoff_source_roles=[],
             visited_roles=["upstream"],
         )
     with pytest.raises(GuardError, match="duplicate"):
@@ -61,14 +63,53 @@ def test_control_layer_rejects_self_duplicate_and_second_level_handoffs():
             handoff("downstream"),
             source_role="upstream",
             handoff_depth=0,
+            handoff_round=0,
+            handoff_source_roles=[],
             visited_roles=["upstream", "downstream"],
         )
-    with pytest.raises(GuardError, match="depth"):
+
+
+def test_recipient_can_question_sources_for_two_round_trips_only():
+    for round_trip in (0, 1):
+        decision = validate_specialist_handoffs(
+            handoff("upstream", instruction=f"確認質問{round_trip + 1}"),
+            source_role="downstream",
+            handoff_depth=1,
+            handoff_round=round_trip,
+            handoff_source_roles=["upstream"],
+            visited_roles=["upstream", "downstream"],
+        )
+        assert decision.handoffs[0].role == "upstream"
+
+    with pytest.raises(GuardError, match="limit exceeded"):
+        validate_specialist_handoffs(
+            handoff("upstream", instruction="3回目の質問"),
+            source_role="downstream",
+            handoff_depth=1,
+            handoff_round=2,
+            handoff_source_roles=["upstream"],
+            visited_roles=["upstream", "downstream"],
+        )
+    with pytest.raises(GuardError, match="only question"):
+        validate_specialist_handoffs(
+            handoff("sre"),
+            source_role="downstream",
+            handoff_depth=1,
+            handoff_round=0,
+            handoff_source_roles=["upstream"],
+            visited_roles=["upstream", "downstream", "sre"],
+        )
+
+
+def test_internal_answer_cannot_start_another_handoff():
+    with pytest.raises(GuardError, match="answer cannot"):
         validate_specialist_handoffs(
             handoff("downstream"),
             source_role="upstream",
-            handoff_depth=1,
-            visited_roles=["upstream"],
+            handoff_depth=2,
+            handoff_round=0,
+            handoff_source_roles=[],
+            visited_roles=["upstream", "downstream"],
         )
 
 

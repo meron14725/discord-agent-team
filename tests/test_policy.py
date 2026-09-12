@@ -17,7 +17,17 @@ def test_path_traversal_rejected(path):
 
 
 @pytest.mark.parametrize(
-    "path", [".github/workflows/ci.yml", "AGENTS.md", "docs/AGENTS.md", ".env", "secrets/key", "Dockerfile"]
+    "path",
+    [
+        ".github/workflows/ci.yml",
+        "AGENTS.md",
+        "docs/AGENTS.md",
+        ".env",
+        "secrets/key",
+        "Dockerfile",
+        "prompts/company-policy.md",
+        "prompts/roles/downstream.md",
+    ],
 )
 def test_control_and_secret_changes_rejected(team, path):
     with pytest.raises(GuardError):

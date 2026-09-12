@@ -8,14 +8,14 @@ import httpx
 
 token = Path("secrets/worker_token").read_text().strip()
 instructions = {
-    "upstream": "要件整理や作業化はせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
-    "downstream": "実装タスクにはせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
-    "sre": "運用作業にはせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
+    "cto": "要件整理や作業化はせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
+    "backend_integrator": "実装タスクにはせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
+    "security_sre": "運用作業にはせず、あなた自身の役割を含む短い日本語の自己紹介を返してください。",
 }
 urls = {
-    "upstream": "http://127.0.0.1:8092/run",
-    "downstream": "http://127.0.0.1:8094/run",
-    "sre": "http://127.0.0.1:8093/run",
+    "cto": "http://127.0.0.1:8092/run",
+    "backend_integrator": "http://127.0.0.1:8094/run",
+    "security_sre": "http://127.0.0.1:8093/run",
 }
 
 

@@ -4,7 +4,7 @@
 
 ## 実行結果
 
-- Pythonテスト: 166件成功。既存v1に加え、Issue正本、安全な要件変更案の反映・再照合、要件・計画の別承認、DB migration、役割台帳、内部相談、型付き引き継ぎ、説明renderer、秘密情報遮断、案件作業空間、並列上限、repository lease、中止・再実行、30秒開始監視、10分滞留復旧、24時間確認通知、安全な担当fallback、Codex厳格schema、Draft PRからSquash mergeまでを検証。
+- Pythonテスト: 169件成功。既存v1に加え、Issue正本、安全な要件変更案の反映・再照合、要件・計画の別承認、DB migration、役割台帳、内部相談、型付き引き継ぎ、説明renderer、秘密情報遮断、案件作業空間、並列上限、repository lease、中止・再実行、30秒開始監視、10分滞留復旧、24時間確認通知、安全な担当fallback、Codex厳格schema、正式役割IDの会話worker認可、Draft PRからSquash mergeまでを検証。
 - Ruff: 成功。テスト依存のStarlette/AnyIOに非推奨警告2件あり。
 - Compose設定検査: 成功。
 - 制御／ワーカーイメージのarm64ビルド: 成功。

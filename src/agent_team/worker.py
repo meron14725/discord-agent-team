@@ -95,10 +95,18 @@ def create_worker(runner=None, token=None, role=None, capacity=None):
                 ("downstream", "fix"),
             },
             "coordinator": {("coordinator", "coordinate")},
-            "specialists": {("upstream", "respond"), ("downstream", "respond")},
-            "conversation-upstream": {("upstream", "respond")},
-            "conversation-downstream": {("downstream", "respond")},
-            "sre": {("sre", "respond")},
+            "specialists": {
+                ("upstream", "respond"),
+                ("cto", "respond"),
+                ("downstream", "respond"),
+                ("backend_integrator", "respond"),
+            },
+            "conversation-upstream": {("upstream", "respond"), ("cto", "respond")},
+            "conversation-downstream": {
+                ("downstream", "respond"),
+                ("backend_integrator", "respond"),
+            },
+            "sre": {("sre", "respond"), ("security_sre", "respond")},
             "v2": {
                 ("cto", "draft_requirements"),
                 ("cto", "review_plan"),

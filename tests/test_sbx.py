@@ -66,6 +66,24 @@ def test_host_worker_requires_auth_for_run_cancel_and_health():
         )
 
 
+@pytest.mark.parametrize(
+    ("worker_role", "request_role"),
+    [
+        ("conversation-upstream", "cto"),
+        ("conversation-downstream", "backend_integrator"),
+        ("sre", "security_sre"),
+    ],
+)
+def test_conversation_workers_accept_canonical_v2_role_ids(worker_role, request_role):
+    with TestClient(create_worker(MockRunner(), TOKEN, worker_role)) as client:
+        response = client.post(
+            "/run",
+            json=request(role=request_role, kind="respond").model_dump(),
+            headers={"Authorization": "Bearer " + TOKEN},
+        )
+    assert response.status_code == 200
+
+
 def test_specialist_pool_runs_two_agents_concurrently_and_separates_sre():
     class ConcurrentRunner(MockRunner):
         def __init__(self):

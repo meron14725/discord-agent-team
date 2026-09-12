@@ -7,6 +7,8 @@ import httpx
 from discord import app_commands
 
 from ..config import load_settings, secret
+from ..contracts import SpecialistDecision
+from ..coordination import resolve_specialist_handoffs
 
 log = logging.getLogger(__name__)
 
@@ -435,8 +437,15 @@ async def serve():
                     await waiting.edit(content=decision["reply"])
                     if decision["action"] == "delegate":
                         bots = {"upstream": upstream, "downstream": downstream, "sre": sre}
+                        initial_roles = [item["role"] for item in decision["delegations"]]
 
-                        async def specialist_turn(delegated):
+                        async def specialist_turn(
+                            delegated,
+                            *,
+                            handoff_depth=0,
+                            visited_roles=None,
+                            handoff_context="",
+                        ):
                             bot = bots[delegated["role"]]
                             try:
                                 async with specialist_slots:
@@ -444,18 +453,28 @@ async def serve():
                                     if channel is None:
                                         channel = await bot.fetch_channel(message.channel.id)
                                     specialist = None
+                                    turn_history = list(history)
+                                    if handoff_context:
+                                        turn_history.append(handoff_context)
+                                    while sum(len(item) for item in turn_history) > 30_000:
+                                        turn_history.pop(0)
                                     for attempt in range(settings.specialist_retry_attempts):
                                         specialist = await api.post(
                                             "/specialist-turn",
                                             json={
-                                                "event_id": f"{message.id}-{attempt}",
+                                                "event_id": (
+                                                    f"{message.id}-{delegated['role']}-"
+                                                    f"{handoff_depth}-{attempt}"
+                                                ),
                                                 "actor": str(message.author.id),
                                                 "guild": str(message.guild.id),
                                                 "channel": str(message.channel.id),
                                                 "text": content,
-                                                "history": history,
+                                                "history": turn_history,
                                                 "role": delegated["role"],
                                                 "instruction": delegated["instruction"],
+                                                "handoff_depth": handoff_depth,
+                                                "visited_roles": visited_roles or initial_roles,
                                                 "discord_snapshot": (
                                                     await sre_platform_snapshot(message.guild.id)
                                                     if delegated["role"] == "sre"
@@ -482,19 +501,46 @@ async def serve():
                                         allowed_mentions=discord.AllowedMentions.none(),
                                     )
                                     return
-                                decision = specialist.json()
+                                specialist_decision = SpecialistDecision.model_validate(
+                                    specialist.json()
+                                )
                                 await channel.send(
-                                    decision["reply"],
+                                    specialist_decision.reply,
                                     allowed_mentions=discord.AllowedMentions.none(),
                                 )
-                                if delegated["role"] == "sre" and decision.get("sre_plan"):
-                                    await propose_sre_change(message, decision)
+                                if delegated["role"] == "sre" and specialist_decision.sre_plan:
+                                    await propose_sre_change(
+                                        message, specialist_decision.model_dump(mode="json")
+                                    )
+                                return delegated["role"], specialist_decision
                             except Exception:
                                 log.exception("Specialist turn failed: role=%s", delegated["role"])
+                                return None
 
-                        await asyncio.gather(
+                        initial_results = await asyncio.gather(
                             *(specialist_turn(delegated) for delegated in decision["delegations"])
                         )
+                        completed = [result for result in initial_results if result is not None]
+                        followups = resolve_specialist_handoffs(initial_roles, completed)
+                        if followups:
+                            all_visited = [
+                                *initial_roles,
+                                *(followup.role for followup in followups),
+                            ]
+                            await asyncio.gather(
+                                *(
+                                    specialist_turn(
+                                        {
+                                            "role": followup.role,
+                                            "instruction": followup.instruction,
+                                        },
+                                        handoff_depth=1,
+                                        visited_roles=all_visited,
+                                        handoff_context=followup.context,
+                                    )
+                                    for followup in followups
+                                )
+                            )
             except Exception:
                 log.exception("Coordinator message handling failed")
                 await waiting.edit(content="判断処理に失敗しました。少し待ってからもう一度送ってください。")

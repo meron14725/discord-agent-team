@@ -21,7 +21,9 @@ from .contracts import (
     DiscordSREPlan,
     DiscordTargetSnapshot,
     RunRequest,
+    SpecialistRole,
 )
+from .coordination import validate_specialist_handoffs
 from .db import Database, Event, Job, Outbox, Task, task_lock
 from .discord_sre import DiscordChangeService
 from .engine import Engine
@@ -57,9 +59,11 @@ class CoordinateCommand(BaseModel):
 
 
 class SpecialistCommand(CoordinateCommand):
-    role: Literal["upstream", "downstream", "sre"]
+    role: SpecialistRole
     instruction: str = Field(min_length=1, max_length=1500)
     discord_snapshot: DiscordPlatformSnapshot | None = None
+    handoff_depth: Literal[0, 1] = 0
+    visited_roles: list[SpecialistRole] = Field(default_factory=list, max_length=3)
 
 
 class DiscordChangeProposal(BaseModel):
@@ -310,6 +314,12 @@ def create_app(db=None, settings=None, token=None):
                         "current_owner_message": command.text,
                         "recent_discord_context_oldest_first": command.history,
                         "delegated_goal": command.instruction,
+                        "handoff_policy": {
+                            "depth": command.handoff_depth,
+                            "allowed": command.handoff_depth == 0,
+                            "visited_roles": sorted(set(command.visited_roles) | {command.role}),
+                            "maximum_targets": 2,
+                        },
                         "available_roles": {
                             "coordinator": "担当選択・重複排除・優先順位・進行管理",
                             "upstream": "要件整理・設計・計画・リスク分析・独立レビュー",
@@ -355,9 +365,16 @@ def create_app(db=None, settings=None, token=None):
             if decision.sre_plan is not None:
                 if command.role != "sre":
                     raise GuardError("Discord SRE plans are restricted to the SRE role")
+                if not requests_discord_change(command.text):
+                    raise GuardError("Discord SRE changes require an explicit owner request")
                 if decision.sre_plan.guild_id != command.guild:
                     raise GuardError("Discord SRE plan guild mismatch")
-            return decision
+            return validate_specialist_handoffs(
+                decision,
+                source_role=command.role,
+                handoff_depth=command.handoff_depth,
+                visited_roles=command.visited_roles,
+            )
         except GuardError as error:
             raise HTTPException(409, str(error)) from error
         except Exception as error:

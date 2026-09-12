@@ -1,5 +1,74 @@
 {
   "$defs": {
+    "CoordinationDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "reply",
+            "delegate",
+            "task",
+            "clarify"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "reply": {
+          "maxLength": 1500,
+          "minLength": 1,
+          "title": "Reply",
+          "type": "string"
+        },
+        "task_summary": {
+          "maxLength": 2000,
+          "title": "Task Summary",
+          "type": "string"
+        },
+        "delegations": {
+          "items": {
+            "$ref": "#/$defs/CoordinationMessage"
+          },
+          "maxItems": 3,
+          "title": "Delegations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "reply",
+        "task_summary",
+        "delegations"
+      ],
+      "title": "CoordinationDecision",
+      "type": "object"
+    },
+    "CoordinationMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "enum": [
+            "upstream",
+            "downstream",
+            "sre"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "instruction": {
+          "description": "Goal and context delegated to this specialist; the specialist decides its response",
+          "maxLength": 1500,
+          "minLength": 1,
+          "title": "Instruction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "instruction"
+      ],
+      "title": "CoordinationMessage",
+      "type": "object"
+    },
     "Coverage": {
       "additionalProperties": false,
       "properties": {
@@ -27,6 +96,96 @@
         "evidence"
       ],
       "title": "Coverage",
+      "type": "object"
+    },
+    "DiscordSREPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation": {
+          "enum": [
+            "create_text_channel",
+            "update_channel_topic",
+            "archive_thread"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "guild_id": {
+          "title": "Guild Id",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "parent_category_id": {
+          "title": "Parent Category Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "topic": {
+          "title": "Topic",
+          "type": "string"
+        },
+        "archive": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Archive"
+        },
+        "reason": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "impact": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Impact",
+          "type": "string"
+        },
+        "verification": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Verification",
+          "type": "string"
+        },
+        "rollback": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Rollback",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "operation",
+        "guild_id",
+        "target_id",
+        "parent_category_id",
+        "name",
+        "topic",
+        "archive",
+        "reason",
+        "impact",
+        "verification",
+        "rollback"
+      ],
+      "title": "DiscordSREPlan",
       "type": "object"
     },
     "Finding": {
@@ -78,6 +237,103 @@
         "requested_change"
       ],
       "title": "Finding",
+      "type": "object"
+    },
+    "SpecialistDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "reply",
+            "clarify",
+            "recommend_task",
+            "request_approval",
+            "handoff"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "reply": {
+          "maxLength": 1500,
+          "minLength": 1,
+          "title": "Reply",
+          "type": "string"
+        },
+        "task_summary": {
+          "description": "Required for recommend_task; ignored and normalized to empty otherwise",
+          "maxLength": 2000,
+          "title": "Task Summary",
+          "type": "string"
+        },
+        "approval_reason": {
+          "description": "Required for request_approval; ignored and normalized to empty otherwise",
+          "maxLength": 1500,
+          "title": "Approval Reason",
+          "type": "string"
+        },
+        "sre_plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiscordSREPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handoffs": {
+          "items": {
+            "$ref": "#/$defs/SpecialistHandoff"
+          },
+          "maxItems": 2,
+          "title": "Handoffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "reply",
+        "task_summary",
+        "approval_reason",
+        "sre_plan",
+        "handoffs"
+      ],
+      "title": "SpecialistDecision",
+      "type": "object"
+    },
+    "SpecialistHandoff": {
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "enum": [
+            "upstream",
+            "downstream",
+            "sre"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why this other specialist is needed",
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "instruction": {
+          "description": "A self-contained goal for the receiving specialist",
+          "maxLength": 1500,
+          "minLength": 1,
+          "title": "Instruction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "reason",
+        "instruction"
+      ],
+      "title": "SpecialistHandoff",
       "type": "object"
     }
   },
@@ -167,6 +423,26 @@
       },
       "title": "Risks",
       "type": "array"
+    },
+    "coordination": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoordinationDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "specialist": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpecialistDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -184,7 +460,9 @@
     "findings",
     "coverage",
     "plan",
-    "risks"
+    "risks",
+    "coordination",
+    "specialist"
   ],
   "title": "Result",
   "type": "object"

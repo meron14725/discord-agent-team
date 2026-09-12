@@ -7,6 +7,9 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+SpecialistRole = Literal["upstream", "downstream", "sre"]
+
+
 class Finding(Strict):
     id: str
     severity: Literal["critical", "high", "medium", "low"]
@@ -24,7 +27,7 @@ class Coverage(Strict):
 
 
 class CoordinationMessage(Strict):
-    role: Literal["upstream", "downstream", "sre"]
+    role: SpecialistRole
     instruction: str = Field(
         min_length=1,
         max_length=1500,
@@ -32,21 +35,50 @@ class CoordinationMessage(Strict):
     )
 
 
+class SpecialistHandoff(Strict):
+    role: SpecialistRole
+    reason: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Why this other specialist is needed",
+    )
+    instruction: str = Field(
+        min_length=1,
+        max_length=1500,
+        description="A self-contained goal for the receiving specialist",
+    )
+
+
 class SpecialistDecision(Strict):
-    action: Literal["reply", "clarify", "recommend_task", "request_approval"]
+    action: Literal["reply", "clarify", "recommend_task", "request_approval", "handoff"]
     reply: str = Field(min_length=1, max_length=1500)
-    task_summary: str = Field(max_length=2000)
-    approval_reason: str = Field(max_length=1500)
+    task_summary: str = Field(
+        max_length=2000,
+        description="Required for recommend_task; ignored and normalized to empty otherwise",
+    )
+    approval_reason: str = Field(
+        max_length=1500,
+        description="Required for request_approval; ignored and normalized to empty otherwise",
+    )
     sre_plan: "DiscordSREPlan | None"
+    handoffs: list[SpecialistHandoff] = Field(max_length=2)
 
     @model_validator(mode="after")
     def action_payload_matches(self):
-        if (self.action == "recommend_task") != bool(self.task_summary.strip()):
-            raise ValueError("Only task recommendations may include a task summary")
-        if (self.action == "request_approval") != bool(self.approval_reason.strip()):
-            raise ValueError("Only approval requests may include an approval reason")
+        if self.action == "recommend_task" and not self.task_summary.strip():
+            raise ValueError("Task recommendations require a task summary")
+        if self.action != "recommend_task":
+            self.task_summary = ""
+        if self.action == "request_approval" and not self.approval_reason.strip():
+            raise ValueError("Approval requests require a reason")
+        if self.action != "request_approval":
+            self.approval_reason = ""
         if self.sre_plan is not None and self.action != "request_approval":
             raise ValueError("Discord SRE plans require an approval request")
+        if (self.action == "handoff") != bool(self.handoffs):
+            raise ValueError("Only handoff decisions may include handoffs")
+        if len({item.role for item in self.handoffs}) != len(self.handoffs):
+            raise ValueError("A role may receive at most one specialist handoff")
         return self
 
 

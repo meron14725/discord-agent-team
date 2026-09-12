@@ -8,7 +8,7 @@
 移行前バックアップは`backups/pre-v2-20260913`。schema migration version 1・2、Dockerの4サービス、launchdの6 workerを確認した。
 移行直後の実モデル疎通では、Codexの厳格な構造化出力が全プロパティを`required`に含めるよう要求し、統括workerがHTTP 503で停止した。Codexへ渡すschemaを再帰的に厳格化して復旧し、統括workerとv2専用workerの両方でHTTP 200と有効な構造化出力を確認した。復旧後の完了通知は統括Botからオーナーへメンション付きで送信する。
 
-移行後の最初のCTO委任では、役割台帳が旧ID `upstream`を正式ID `cto`へ解決した一方、会話workerの受付表が旧IDだけを許可していたためHTTP 403になった。上流・下流・SREの会話workerが新旧IDを同じ権限範囲で受け付けるよう修正し、正式IDを使う実モデル疎通で再確認する。
+移行後の最初のCTO委任では、役割台帳が旧ID `upstream`を正式ID `cto`へ解決した一方、会話workerの受付表が旧IDだけを許可していたためHTTP 403になった。上流・下流・SREの会話workerが新旧IDを同じ権限範囲で受け付けるよう修正し、正式ID `cto`・`backend_integrator`・`security_sre`の3役を並列実行して、すべてHTTP 200と有効な実モデル応答になることを確認した。復旧通知は統括Botからオーナーへ送信した（DiscordメッセージID `1548378556810264689`）。
 
 ## 1案件の流れ
 

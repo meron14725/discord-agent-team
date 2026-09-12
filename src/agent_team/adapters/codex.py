@@ -55,6 +55,26 @@ SPECIALIST_ROLE = {
 }
 
 
+def codex_output_schema() -> dict:
+    """Return the strict JSON Schema accepted by Codex structured outputs."""
+    schema = Result.model_json_schema()
+
+    def require_all_properties(node):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["required"] = list(properties)
+                node["additionalProperties"] = False
+            for value in node.values():
+                require_all_properties(value)
+        elif isinstance(node, list):
+            for value in node:
+                require_all_properties(value)
+
+    require_all_properties(schema)
+    return schema
+
+
 class RemoteRunner:
     def __init__(self, settings, token=""):
         self.settings = settings
@@ -296,7 +316,7 @@ for path, allowed in [(Path('inside.txt'), sys.argv[1] == 'workspace-write'), (P
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
             schema = root / "result.schema.json"
-            schema.write_text(json.dumps(Result.model_json_schema()))
+            schema.write_text(json.dumps(codex_output_schema()))
             result_path = root / "result.json"
             # No inherited DB, Bot, GitHub, SSH, proxy, or service credentials.
             env = {

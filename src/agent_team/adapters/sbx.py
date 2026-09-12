@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..contracts import Result, RunRequest, RunResponse, TestEvidence
 from ..policy import GuardError, safe_path
-from .codex import POLICY, ROLE, SPECIALIST_ROLE, CodexRunner
+from .codex import POLICY, ROLE, SPECIALIST_ROLE, CodexRunner, codex_output_schema
 
 IMAGE = "docker/sandbox-templates@sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fbfc61f47568092a93fb9dc88b0"
 IDENTITY = ("task_id", "spec_version", "spec_hash", "head_sha", "base_sha")
@@ -273,7 +273,7 @@ else:
                 {
                     "source": output_source,
                     "files": request.files if brokered_write or not readonly else {},
-                    "schema": Result.model_json_schema(),
+                    "schema": codex_output_schema(),
                 }
             ),
         )

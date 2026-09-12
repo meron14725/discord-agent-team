@@ -10,12 +10,30 @@ import pytest
 from fastapi.testclient import TestClient
 from test_workflow import step
 
-from agent_team.adapters.codex import CodexRunner, MockRunner
+from agent_team.adapters.codex import CodexRunner, MockRunner, codex_output_schema
 from agent_team.adapters.github import GitHub, MockGitHub
 from agent_team.api import create_app
 from agent_team.contracts import CommandRequest, PatchProposal, RunRequest, WorkspaceReadRequest
 from agent_team.db import Task
 from agent_team.policy import GuardError
+
+
+def test_codex_output_schema_requires_every_object_property():
+    schema = codex_output_schema()
+
+    def assert_strict_objects(node):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                assert node["required"] == list(properties)
+                assert node["additionalProperties"] is False
+            for value in node.values():
+                assert_strict_objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict_objects(value)
+
+    assert_strict_objects(schema)
 
 
 def test_per_task_repo_created_only_after_spec_approval(team):

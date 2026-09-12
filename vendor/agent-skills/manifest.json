@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-12",
+  "runtime_execution_allowed": false,
+  "snapshots": [
+    {
+      "id": "mattpocock-skills",
+      "source_url": "https://github.com/mattpocock/skills",
+      "commit": "3cca18b368ae95cdbdebbff572ccafa662551015",
+      "license": "MIT",
+      "license_path": "mattpocock-skills/LICENSE",
+      "license_sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
+      "files": [
+        {
+          "path": "mattpocock-skills/skills/engineering/domain-modeling/ADR-FORMAT.md",
+          "sha256": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0"
+        },
+        {
+          "path": "mattpocock-skills/skills/engineering/domain-modeling/CONTEXT-FORMAT.md",
+          "sha256": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13"
+        },
+        {
+          "path": "mattpocock-skills/skills/engineering/domain-modeling/SKILL.md",
+          "sha256": "327a2b50620e2fd70abc6893cd6965e76b20f8d0adb0dc2c8d5eb3845efb643e"
+        },
+        {
+          "path": "mattpocock-skills/skills/engineering/domain-modeling/agents/openai.yaml",
+          "sha256": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
+        },
+        {
+          "path": "mattpocock-skills/skills/engineering/grill-with-docs/SKILL.md",
+          "sha256": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe"
+        },
+        {
+          "path": "mattpocock-skills/skills/engineering/grill-with-docs/agents/openai.yaml",
+          "sha256": "94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9"
+        },
+        {
+          "path": "mattpocock-skills/skills/productivity/grilling/SKILL.md",
+          "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+        },
+        {
+          "path": "mattpocock-skills/skills/productivity/grilling/agents/openai.yaml",
+          "sha256": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b"
+        }
+      ]
+    },
+    {
+      "id": "keitakn-engineering-skills",
+      "source_url": "https://github.com/keitakn/engineering-skills",
+      "commit": "b785a355ff83a10515a246026a0595a30ef41827",
+      "license": "MIT",
+      "license_path": "keitakn-engineering-skills/LICENSE",
+      "license_sha256": "dd038b79b5cead2a32de7f6ac5aae66062f46ad22465b6aaa891f28e0d888a2d",
+      "files": [
+        {
+          "path": "keitakn-engineering-skills/.claude/skills/explain-visually/SKILL.md",
+          "sha256": "ac5d198a45e52af52cfde43e84b332d724c93ece035ec0c772d607bd8edd73bb"
+        },
+        {
+          "path": "keitakn-engineering-skills/.claude/skills/explain-visually/assets/template.html",
+          "sha256": "3bd5dbc87b4ab9d782d4860988e2af5409a14a8f27e2639223888abd2279529c"
+        },
+        {
+          "path": "keitakn-engineering-skills/.claude/skills/explain-visually/scripts/verify_page.py",
+          "sha256": "b19565288c055074d1c3d0fde98ca1bb5e9cddc24c8e307ce98870d8129e2173"
+        }
+      ]
+    }
+  ]
+}

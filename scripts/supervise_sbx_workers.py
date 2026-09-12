@@ -35,6 +35,7 @@ WORKERS = (
         "conversation-downstream",
         1,
     ),
+    ("v2", ROOT / "scripts/run_sbx_v2_worker.sh", 8095, "v2", 4),
 )
 STARTUP_GRACE_SECONDS = 15
 CHECK_INTERVAL_SECONDS = 10

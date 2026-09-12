@@ -1,0 +1,47 @@
+# Issue正本の開発フロー v2
+
+## 現在の状態
+
+コードとmock E2Eは実装済みで、実運用設定では`workflow_v2.enabled: false`を維持する。
+既存v1案件は移行せず、そのまま完了させる。v2はrepository aliasのallowlistに入った新規案件だけを対象にする。
+
+## 1案件の流れ
+
+1. オーナーがrepository別チャンネルへ自然文で目的を書く。
+2. 統括が受付し、CTOが目的と判断基準を整理してGitHub Issueを作る。
+3. 必要な論点だけ話題スレッドを作り、内部相談の結論をIssueコメントへ残す。
+4. 要件説明HTML/PNGとIssue本文hashを提示し、許可されたオーナーが承認する。
+5. CTOから実装統合担当へ型付きで引き継ぎ、Bot同士のメンション付き会話を表示する。
+6. 実装統合担当が通算版の計画をbranchへ保存し、別のCTO sessionがレビューする。重大指摘は最大3回修正する。
+7. 計画説明HTML/PNG、計画hash、base SHAを提示し、オーナーが承認する。
+8. 新しい一時sessionで実装し、Draft PR、独立レビュー、CI、最終索引を作る。
+9. 最新head/base、要件hash、計画hashへのマージ承認後だけSquash mergeする。
+
+要件本文はGitHub Issueだけが正本である。DBと`docs/work-items/issue-<番号>/README.md`には識別子、hash、版、リンク、判断記録だけを保存する。
+
+## 有効化前の確認
+
+1. DBをバックアップし、`agent-team migrate`後のschema version 2を確認する。
+2. `renderer`、orchestrator、現在の4 Bot、役別workerのhealthを確認する。
+3. 専用test Issueで、別編集後の古いETagを使う更新が拒否され、別編集の本文が残ることを確認する。確認できるまで`github_issue_conditional_updates: false`にする。
+4. repository別DiscordチャンネルIDを`project_channels`へ設定する。
+5. 要件・計画承認者を通常会話の`owner_ids`とは別に指定する。
+6. `merge_mode: disabled`のまま、検証カテゴリと非公開test repositoryだけで一周させる。
+7. CI発行App、別主体レビュー、branch protection、最新SHA失効を確認してから`human_gate`へ切り替える。
+
+## 中止と再開
+
+`/cancel`は未送信の副作用、job、lease、承認を失効し、Issue closeを最大3回試す。Issue、branch、PR、artifact、監査、会話ログは削除しない。
+
+再開は`/resume`ではなく`/restart`を使う。新しいtask IDとbranchを作り、前task IDと同じIssueを参照する。Issueを再度開き、要件説明と要件承認からやり直す。旧confirmation IDは使えない。
+
+## 追加Bot
+
+追加4役は内部相談では利用でき、Discord接続だけが既定無効である。対象roleのDiscord Appとtokenを用意し、`role_registry`で一役だけ`discord_enabled: true`にして次を使う。
+
+```sh
+docker compose -f compose.yaml -f compose.optional-bots.yaml \
+  -f compose.sbx.yaml --profile live up -d --build
+```
+
+その役の通常応答、全員宛て応答、3回接続失敗、Bot投稿を命令として再処理しないことを確認してから次の役を有効にする。通常処理は最大4件、同じrepositoryの書き込みは1件、SRE特権操作は1件である。

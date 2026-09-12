@@ -27,7 +27,9 @@ Linuxではsecretsのbind mountにホストの所有権が反映される。非r
 3. OAuth2の `bot` と `applications.commands` で指定サーバへ追加。View Channel、Send Messages、Send Messages in Threads、Create Public Threads、Read Message History、Attach Filesを与える。Administrator不要。
 4. 自分のDiscordで開発者モードを有効化し、ユーザーIDをコピーして `owner_ids` に設定。
 5. 統括BotだけDeveloper PortalのBotページでMessage Content IntentをONにする。`message_content: true`と`natural_language_requests: true`を設定すると、統括エージェントがgeneralの会話文脈を読み、返答・専門Botへの発言委任・新規依頼・追加確認を選ぶ。案件スレッドの通常返信は要件回答として扱う。他の3 BotではOFFのままにする。
-6. 通常の案件worker、統括worker、上流会話worker、下流会話worker、SRE workerの5プロセスを起動する。会話用の3役は別プロセス・別Sandbox状態領域を使い、Discord側の上限3件と合わせて並列実行する。一時的な409/502/503は役ごとに1回再試行し、最終失敗もDiscordへ表示する。
+6. 通常の案件worker、統括worker、上流会話worker、下流会話worker、SRE workerの5プロセスを起動する。通常の専門処理は最大4件、SRE特権処理は専用枠1件で実行する。同一repositoryへの書き込みだけは直列化する。一時的な409/502/503は役ごとに最大3回接続し、失敗時は同じcapabilityと権限区分を持つ設定済みfallbackだけへ移管する。SRE特権処理は代替しない。
+
+追加4役（フロントエンド・UX、QA、評価管理、調査・分析）は役割台帳では既定無効である。各Bot tokenを保存し、対象役を一役ずつ有効にして、`compose.optional-bots.yaml`を重ねて起動する。無効な役は統括の候補にも全員宛ての応答にも含まれない。
 
 通常運用では5本をターミナルから直接起動しない。`deploy/com.meron14725.discord-agent-workers.plist`を
 `~/Library/LaunchAgents/`へ登録し、launchdから`scripts/supervise_sbx_workers.py`を起動する。

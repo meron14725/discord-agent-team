@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import io
 import logging
 
@@ -9,6 +11,7 @@ from discord import app_commands
 from ..config import load_settings, secret
 from ..contracts import SpecialistDecision
 from ..coordination import resolve_specialist_handoffs
+from ..redaction import SecretScanner
 
 log = logging.getLogger(__name__)
 
@@ -17,10 +20,12 @@ async def serve():
     settings = load_settings()
     import os
 
+    internal_token = secret("INTERNAL_TOKEN")
+    scanner = SecretScanner(hashlib.sha256(internal_token.encode()).digest())
     api = httpx.AsyncClient(
         base_url=os.environ.get("CONTROL_URL", "http://orchestrator:8080"),
         timeout=httpx.Timeout(settings.coordination_timeout + 120),
-        headers={"Authorization": "Bearer " + secret("INTERNAL_TOKEN")},
+        headers={"Authorization": "Bearer " + internal_token},
     )
     coordinator_intents = discord.Intents.default()
     coordinator_intents.message_content = settings.message_content
@@ -34,10 +39,56 @@ async def serve():
         intents=discord.Intents.default(), allowed_mentions=discord.AllowedMentions.none()
     )
     sre = discord.Client(intents=discord.Intents.default(), allowed_mentions=discord.AllowedMentions.none())
+    role_clients = {
+        "coordinator": coordinator,
+        "cto": upstream,
+        "backend_integrator": downstream,
+        "security_sre": sre,
+    }
+    for definition in settings.role_registry.entries:
+        if definition.enabled and definition.discord_enabled and definition.id not in role_clients:
+            role_clients[definition.id] = discord.Client(
+                intents=discord.Intents.default(),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+    for alias, canonical in settings.role_registry.aliases.items():
+        if canonical in role_clients:
+            role_clients[alias] = role_clients[canonical]
     tree = app_commands.CommandTree(upstream)
     guild = discord.Object(id=int(settings.guild_id))
     coordinator_lock = asyncio.Lock()
     specialist_slots = asyncio.Semaphore(settings.specialist_concurrency)
+
+    async def remove_secret_message(message):
+        """Use the SRE identity to remove a detected secret and retain metadata only."""
+        report = scanner.scan_text(message.content)
+        if not report.blocked:
+            return False
+        deleted = False
+        try:
+            channel = await sre.fetch_channel(message.channel.id)
+            target = await channel.fetch_message(message.id)
+            await target.delete(reason="deterministic secret scanner")
+            deleted = True
+        except Exception:
+            log.exception("SRE could not delete detected secret message id=%s", message.id)
+        if settings.discord_sre.audit_channel_id:
+            try:
+                audit = await sre.fetch_channel(int(settings.discord_sre.audit_channel_id))
+                kinds = ", ".join(sorted({finding.kind for finding in report.findings}))
+                await audit.send(
+                    (
+                        "秘密情報らしき投稿を検出しました。値は保存していません。\n"
+                        f"message_id: `{message.id}` / channel_id: `{message.channel.id}`\n"
+                        f"分類: {kinds} / 削除: {'成功' if deleted else '失敗'}\n"
+                        f"監査hash: `{report.content_hash}`\n"
+                        "該当資格情報を失効・再発行してください。"
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                log.exception("SRE secret audit notification failed message id=%s", message.id)
+        return True
 
     async def sre_platform_snapshot(guild_id: int):
         guild = sre.get_guild(guild_id)
@@ -340,6 +391,7 @@ async def serve():
         ("pause", "一時停止"),
         ("resume", "再開"),
         ("cancel", "キャンセル"),
+        ("restart", "キャンセル済み案件を新しい案件として再開"),
         ("retry", "停止原因解消後に再試行"),
     ]:
         register(name, description)
@@ -366,6 +418,8 @@ async def serve():
             return
         if str(message.author.id) not in settings.owner_ids or str(message.guild.id) != settings.guild_id:
             return
+        if await remove_secret_message(message):
+            return
         content = message.content.strip()
         if not content:
             return
@@ -388,7 +442,9 @@ async def serve():
                 },
             )
             return
-        if settings.natural_language_requests and str(message.channel.id) == settings.channel_id:
+        project_channels = settings.workflow_v2.project_channels
+        accepted_channels = {settings.channel_id, *project_channels.values()}
+        if settings.natural_language_requests and str(message.channel.id) in accepted_channels:
             waiting = await message.reply(
                 "内容を確認しています…",
                 mention_author=False,
@@ -426,7 +482,14 @@ async def serve():
                                 "actor": str(message.author.id),
                                 "guild": str(message.guild.id),
                                 "channel": str(message.channel.id),
-                                "repo": settings.default_repo,
+                                "repo": next(
+                                    (
+                                        alias
+                                        for alias, channel_id in project_channels.items()
+                                        if channel_id == str(message.channel.id)
+                                    ),
+                                    settings.default_repo,
+                                ),
                                 "text": decision["task_summary"],
                             },
                         )
@@ -436,8 +499,18 @@ async def serve():
                             return
                     await waiting.edit(content=decision["reply"])
                     if decision["action"] == "delegate":
-                        bots = {"upstream": upstream, "downstream": downstream, "sre": sre}
+                        bots = role_clients
                         initial_roles = [item["role"] for item in decision["delegations"]]
+                        for delegated in decision["delegations"]:
+                            target_user = bots[delegated["role"]].user
+                            if target_user is not None and coordinator.user is not None:
+                                await message.channel.send(
+                                    (
+                                        f"<@{coordinator.user.id}> → <@{target_user.id}> 依頼\n"
+                                        f"{delegated['instruction'][:1400]}"
+                                    ),
+                                    allowed_mentions=discord.AllowedMentions(users=[target_user]),
+                                )
 
                         async def specialist_turn(
                             delegated,
@@ -447,6 +520,7 @@ async def serve():
                             handoff_source_roles=None,
                             visited_roles=None,
                             handoff_context="",
+                            allow_fallback=True,
                         ):
                             bot = bots[delegated["role"]]
                             try:
@@ -500,6 +574,44 @@ async def serve():
                                         delegated["role"],
                                         specialist.status_code,
                                     )
+                                    role_definition = settings.role_registry.role(
+                                        delegated["role"]
+                                    )
+                                    fallback = role_definition.fallback_role
+                                    if (
+                                        allow_fallback
+                                        and specialist.status_code in {502, 503}
+                                        and fallback
+                                        and fallback in bots
+                                    ):
+                                        fallback_bot = bots[fallback]
+                                        if fallback_bot.user is not None:
+                                            await channel.send(
+                                                (
+                                                    f"<@{fallback_bot.user.id}> "
+                                                    f"{role_definition.display_name}への接続が3回失敗したため、"
+                                                    "同じ能力範囲の代替担当へ依頼します。"
+                                                ),
+                                                allowed_mentions=discord.AllowedMentions(
+                                                    users=[fallback_bot.user]
+                                                ),
+                                            )
+                                        return await specialist_turn(
+                                            {
+                                                "role": fallback,
+                                                "instruction": (
+                                                    delegated["instruction"]
+                                                    + "\n接続不能だった元担当: "
+                                                    + role_definition.id
+                                                ),
+                                            },
+                                            handoff_depth=handoff_depth,
+                                            handoff_round=handoff_round,
+                                            handoff_source_roles=handoff_source_roles,
+                                            visited_roles=visited_roles,
+                                            handoff_context=handoff_context,
+                                            allow_fallback=False,
+                                        )
                                     await channel.send(
                                         "一時的に応答できませんでした。少し待ってから、もう一度呼んでください。",
                                         allowed_mentions=discord.AllowedMentions.none(),
@@ -509,8 +621,16 @@ async def serve():
                                     specialist.json()
                                 )
                                 await channel.send(
-                                    specialist_decision.reply,
-                                    allowed_mentions=discord.AllowedMentions.none(),
+                                    (
+                                        f"<@{coordinator.user.id}> {specialist_decision.reply}"
+                                        if coordinator.user is not None
+                                        else specialist_decision.reply
+                                    ),
+                                    allowed_mentions=(
+                                        discord.AllowedMentions(users=[coordinator.user])
+                                        if coordinator.user is not None
+                                        else discord.AllowedMentions.none()
+                                    ),
                                 )
                                 if delegated["role"] == "sre" and specialist_decision.sre_plan:
                                     await propose_sre_change(
@@ -535,7 +655,7 @@ async def serve():
                             async def run_handoff_dialogue(followup):
                                 context = followup.context
                                 source_roles = list(followup.source_roles)
-                                for round_trip in range(3):
+                                for round_trip in range(2):
                                     recipient_result = await specialist_turn(
                                         {
                                             "role": followup.role,
@@ -603,22 +723,122 @@ async def serve():
                     await on_message(message)
 
     async def notifications():
-        await coordinator.wait_until_ready()
-        await upstream.wait_until_ready()
-        await downstream.wait_until_ready()
-        await sre.wait_until_ready()
+        for client in dict.fromkeys(role_clients.values()):
+            await client.wait_until_ready()
         while True:
             try:
                 response = await api.get("/outbox")
                 response.raise_for_status()
                 for item in response.json():
                     try:
-                        bot = {
-                            "downstream": downstream,
-                            "sre": sre,
-                            "coordinator": coordinator,
-                        }.get(item["role"], upstream)
+                        outbound = str(item.get("body", "")) + "\n" + str(item.get("spec", ""))
+                        if scanner.scan_text(outbound).blocked:
+                            log.error("Secret blocked at Discord outbox boundary event=%s", item["id"])
+                            await api.post(f"/outbox/{item['id']}/fail")
+                            continue
+                        bot = role_clients.get(item["role"], upstream)
                         marker = f"[event:{item['id']}]"
+                        if item.get("archive_topic_thread"):
+                            thread = await sre.fetch_channel(int(item["thread_id"]))
+                            await thread.edit(
+                                archived=True,
+                                reason=f"resolved topic {item['topic_record_id']}",
+                            )
+                            await api.post(
+                                f"/outbox/{item['id']}/ack",
+                                json={"message_id": item["thread_id"]},
+                            )
+                            continue
+                        if item.get("create_topic_thread"):
+                            channel = await coordinator.fetch_channel(int(item["channel_id"]))
+                            thread = await channel.create_thread(
+                                name=item["thread_name"],
+                                type=discord.ChannelType.public_thread,
+                                reason=f"agent topic {item['topic_id']}",
+                            )
+                            mention = ""
+                            allowed = discord.AllowedMentions.none()
+                            if item.get("owner_confirmation") and settings.owner_ids:
+                                owner = discord.Object(id=int(settings.owner_ids[0]))
+                                mention = f"<@{owner.id}> "
+                                allowed = discord.AllowedMentions(users=[owner])
+                            posted = await thread.send(
+                                f"{mention}{item['body'][:1700]}\n{marker}",
+                                allowed_mentions=allowed,
+                            )
+                            await api.post(
+                                f"/outbox/{item['id']}/ack",
+                                json={
+                                    "message_id": str(posted.id),
+                                    "thread_id": str(thread.id),
+                                },
+                            )
+                            continue
+                        if item.get("project_status"):
+                            channel = await coordinator.fetch_channel(int(item["channel_id"]))
+                            view = None
+                            owner_mentions = discord.AllowedMentions.none()
+                            mention = ""
+                            if item.get("approval"):
+                                view = discord.ui.View(timeout=None)
+                                labels = {
+                                    "requirements": "要件を承認",
+                                    "plan": "実装計画を承認",
+                                    "merge": "このSHAのマージを承認",
+                                }
+                                view.add_item(
+                                    discord.ui.Button(
+                                        label=labels[item["approval"]],
+                                        custom_id="team:" + item["id"],
+                                        style=discord.ButtonStyle.success,
+                                    )
+                                )
+                                approvers = (
+                                    settings.workflow_v2.requirements_approver_ids
+                                    if item["approval"] == "requirements"
+                                    else settings.workflow_v2.plan_approver_ids
+                                )
+                                if approvers:
+                                    owner = discord.Object(id=int(approvers[0]))
+                                    mention = f"<@{owner.id}> "
+                                    owner_mentions = discord.AllowedMentions(users=[owner])
+                            body = (
+                                f"{mention}**{item['task_id']}**\n{item['body'][:1500]}\n{marker}"
+                            )
+                            files = [
+                                discord.File(
+                                    io.BytesIO(base64.b64decode(attachment["content_base64"])),
+                                    filename=attachment["filename"],
+                                )
+                                for attachment in item.get("attachments", [])
+                            ]
+                            existing = None
+                            if item.get("status_message_id"):
+                                try:
+                                    existing = await channel.fetch_message(
+                                        int(item["status_message_id"])
+                                    )
+                                except discord.NotFound:
+                                    existing = None
+                            if existing is None:
+                                existing = await channel.send(
+                                    body,
+                                    view=view,
+                                    allowed_mentions=owner_mentions,
+                                    files=files,
+                                )
+                            else:
+                                await existing.edit(
+                                    content=body,
+                                    view=view,
+                                    allowed_mentions=owner_mentions,
+                                    attachments=files,
+                                )
+                            await api.post(
+                                f"/outbox/{item['id']}/ack",
+                                json={"message_id": str(existing.id)},
+                            )
+                            continue
                         if item.get("create_thread"):
                             channel = await coordinator.fetch_channel(int(settings.channel_id))
                             message = None
@@ -645,6 +865,18 @@ async def serve():
                                 break
                         if existing is None:
                             kwargs = {}
+                            body_prefix = ""
+                            if item.get("mention_owner") and settings.owner_ids:
+                                owner = discord.Object(id=int(settings.owner_ids[0]))
+                                body_prefix = f"<@{owner.id}> "
+                                kwargs["allowed_mentions"] = discord.AllowedMentions(users=[owner])
+                            if item.get("delegation_log"):
+                                target_bot = role_clients.get(item["target_role"])
+                                if target_bot and target_bot.user:
+                                    body_prefix = f"<@{target_bot.user.id}> "
+                                    kwargs["allowed_mentions"] = discord.AllowedMentions(
+                                        users=[target_bot.user]
+                                    )
                             if item.get("approval"):
                                 view = discord.ui.View(timeout=None)
                                 view.add_item(
@@ -661,7 +893,7 @@ async def serve():
                                 kwargs["file"] = discord.File(
                                     io.BytesIO(item["spec"].encode()), filename="spec.md"
                                 )
-                            body = item["body"][:1500]
+                            body = body_prefix + item["body"][:1500]
                             if item.get("head_sha"):
                                 body += "\nhead: " + item["head_sha"]
                             existing = await channel.send(body + "\n" + marker, **kwargs)
@@ -674,16 +906,17 @@ async def serve():
             await asyncio.sleep(2)
 
     try:
-        await asyncio.gather(
-            coordinator.start(secret("DISCORD_COORDINATOR_TOKEN")),
-            upstream.start(secret("DISCORD_UPSTREAM_TOKEN")),
-            downstream.start(secret("DISCORD_DOWNSTREAM_TOKEN")),
-            sre.start(secret("DISCORD_SRE_TOKEN")),
-            notifications(),
-        )
+        starts = []
+        for role_id, client in {
+            role.id: role_clients[role.id]
+            for role in settings.role_registry.entries
+            if role.enabled and role.discord_enabled
+        }.items():
+            starts.append(
+                client.start(secret(settings.discord_bot_key(role_id).upper()))
+            )
+        await asyncio.gather(*starts, notifications())
     finally:
-        await coordinator.close()
-        await upstream.close()
-        await downstream.close()
-        await sre.close()
+        for client in dict.fromkeys(role_clients.values()):
+            await client.close()
         await api.aclose()

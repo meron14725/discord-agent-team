@@ -1,0 +1,15 @@
+# Enable the four optional Discord identities only after their tokens exist and the
+# corresponding role_registry entries have discord_enabled: true.
+services:
+  discord-gateway:
+    secrets:
+      - discord_frontend_ux_token
+      - discord_qa_token
+      - discord_evaluation_manager_token
+      - discord_analyst_token
+
+secrets:
+  discord_frontend_ux_token: {file: ./secrets/discord_frontend_ux_token}
+  discord_qa_token: {file: ./secrets/discord_qa_token}
+  discord_evaluation_manager_token: {file: ./secrets/discord_evaluation_manager_token}
+  discord_analyst_token: {file: ./secrets/discord_analyst_token}

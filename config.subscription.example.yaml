@@ -32,9 +32,27 @@ poll_seconds: 60
 message_content: true
 natural_language_requests: true
 coordination_timeout: 300
-specialist_concurrency: 3
-specialist_retry_attempts: 2
+specialist_concurrency: 4
+specialist_retry_attempts: 3
 specialist_urls:
   upstream: http://127.0.0.1:8092
   downstream: http://127.0.0.1:8094
   sre: http://127.0.0.1:8093
+workflow_v2:
+  enabled: false # 実Discord/GitHubの受入試験が終わるまで変更しない。
+  repository_aliases: [project]
+  requirements_approver_ids: ['312561681387487232']
+  plan_approver_ids: ['312561681387487232']
+  project_channels: {} # project: '<専用DiscordチャンネルID>' を設定してから有効化する。
+  github_issue_conditional_updates: false # 専用test IssueでETag preflight後だけtrue。
+  normal_concurrency: 4
+  privileged_concurrency: 1
+  model_calls_per_task: 30
+  consultations_per_task: 15
+  consultations_per_topic: 5
+  plan_revision_limit: 3
+  implementation_revision_limit: 3
+  heartbeat_seconds: 120
+  stalled_seconds: 600
+  renderer_url: http://renderer:8091
+  worker_url: http://v2-worker:8090 # compose.sbx overlayではhost launcherの8095へ置換。

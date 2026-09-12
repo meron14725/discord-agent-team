@@ -2,7 +2,9 @@
 
 import base64
 import copy
+import fnmatch
 import hashlib
+import mimetypes
 import time
 from urllib.parse import quote
 
@@ -11,12 +13,14 @@ from sqlalchemy import select
 
 from ..db import Operation
 from ..policy import GuardError, digest, safe_path
+from ..redaction import SecretScanner
 from .github_auth import HEADERS, InstallationAuth
 
 
 class GitHub:
-    def __init__(self, settings, tokens, reviewer_private_key=""):
+    def __init__(self, settings, tokens, reviewer_private_key="", scanner=None):
         self.settings = settings
+        self.scanner = scanner or SecretScanner(b"github-adapter-test-salt")
         self.clients = {
             role: httpx.Client(
                 base_url="https://api.github.com",
@@ -114,10 +118,69 @@ class GitHub:
             if total > self.settings.max_bytes or len(files) >= self.settings.max_files:
                 raise GuardError("Source exceeds small-repository MVP limit")
             raw = self.api(repo, "GET", f"git/blobs/{entry['sha']}")
-            files[entry["path"]] = base64.b64decode(raw["content"]).decode("utf-8")
+            content = base64.b64decode(raw["content"]).decode("utf-8")
+            if self.scanner.scan_text(content).blocked:
+                raise GuardError("Potential secret blocked at GitHub source boundary")
+            files[entry["path"]] = content
         return files
 
+    def source_context(self, repo, sha):
+        """Build a model snapshot without removing excluded blobs from the Git tree."""
+        tree = self.api(repo, "GET", f"git/trees/{sha}?recursive=1")
+        if tree.get("truncated"):
+            raise GuardError("Truncated repository tree")
+        files, manifest, forwarded = {}, [], 0
+        for entry in tree["tree"]:
+            if entry["type"] == "tree":
+                continue
+            path = entry["path"]
+            safe_path(path)
+            mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            metadata = {
+                "path": path,
+                "mode": entry["mode"],
+                "size": entry.get("size", 0),
+                "git_sha": entry["sha"],
+                "mime_type": mime,
+            }
+            allowed = entry["mode"] in {"100644", "100755"} and any(
+                fnmatch.fnmatch(path, pattern) for pattern in repo.allowed_paths
+            )
+            if not allowed:
+                manifest.append({**metadata, "forwarded": False, "reason": "path_or_type"})
+                continue
+            raw = self.api(repo, "GET", f"git/blobs/{entry['sha']}")
+            content = base64.b64decode(raw["content"])
+            inspection = self.scanner.inspect_content(content, mime)
+            if inspection.blocked:
+                reason = "binary" if inspection.metadata.binary else "secret"
+                manifest.append(
+                    {
+                        **metadata,
+                        "content_hash": inspection.metadata.content_hash,
+                        "forwarded": False,
+                        "reason": reason,
+                    }
+                )
+                continue
+            forwarded += len(content)
+            if forwarded > self.settings.max_bytes or len(files) >= self.settings.max_files:
+                manifest.append({**metadata, "forwarded": False, "reason": "limit"})
+                continue
+            files[path] = inspection.text
+            manifest.append(
+                {
+                    **metadata,
+                    "content_hash": inspection.metadata.content_hash,
+                    "forwarded": True,
+                    "reason": "",
+                }
+            )
+        return {"files": files, "manifest": manifest}
+
     def issue(self, repo, task, body):
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub Issue boundary")
         marker = f"<!-- agent-task:{task.id} -->"
         existing = [
             i
@@ -137,11 +200,81 @@ class GitHub:
             )
         )["number"]
 
+    def issue_reference(self, repo, issue_number):
+        """Read the Issue authority together with the validators used by approval fences."""
+        response = self.clients["publisher"].get(
+            f"/repos/{repo.repository}/issues/{int(issue_number)}"
+        )
+        response.raise_for_status()
+        data = response.json()
+        if "pull_request" in data:
+            raise GuardError("Requirements authority must be a GitHub Issue")
+        etag = response.headers.get("etag", "")
+        body = data.get("body") or ""
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub Issue boundary")
+        return {
+            "number": data["number"],
+            "url": data["html_url"],
+            "body": body,
+            "body_hash": digest(body),
+            "updated_at": data["updated_at"],
+            "etag": etag,
+        }
+
+    def update_issue_body(self, repo, issue_number, body, *, expected_etag, preflight_confirmed):
+        """Replace an Issue body only in environments where stale ETags were proven to fail."""
+        if not preflight_confirmed or not expected_etag:
+            raise GuardError("Conditional Issue update is unavailable; publish a proposal comment")
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub Issue boundary")
+        response = self.clients["publisher"].patch(
+            f"/repos/{repo.repository}/issues/{int(issue_number)}",
+            headers={"If-Match": expected_etag},
+            json={"body": body},
+        )
+        if response.status_code in {409, 412}:
+            raise GuardError("GitHub Issue changed concurrently")
+        response.raise_for_status()
+        return self.issue_reference(repo, issue_number)
+
+    def comment_issue(self, repo, issue_number, body):
+        if not body.strip():
+            raise GuardError("Issue comment cannot be empty")
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub comment boundary")
+        result = self.api(
+            repo,
+            "POST",
+            f"issues/{int(issue_number)}/comments",
+            json={"body": body},
+        )
+        return {"id": result["id"], "url": result["html_url"]}
+
+    def set_issue_state(self, repo, issue_number, state):
+        if state not in {"open", "closed"}:
+            raise GuardError("Unsupported Issue state")
+        result = self.api(
+            repo,
+            "PATCH",
+            f"issues/{int(issue_number)}",
+            json={"state": state},
+        )
+        if result.get("state") != state:
+            raise GuardError("GitHub Issue state did not converge")
+        return {"number": result["number"], "state": result["state"]}
+
     def publish(self, repo, task, files, key):
         d, branch = task.data, task.data["branch"]
-        if not branch.startswith(f"agent/{task.id}/") or branch == repo.base:
+        legacy_branch = branch.startswith(f"agent/{task.id}/")
+        v2_branch = task.workflow_version == 2 and branch.startswith(
+            f"agent/issue-{d.get('requirements_issue')}-"
+        )
+        if not (legacy_branch or v2_branch) or branch == repo.base:
             raise GuardError("Publisher branch denied")
         marker = f"<!-- agent-task:{task.id} -->"
+        if any(content and self.scanner.scan_text(content).blocked for content in files.values()):
+            raise GuardError("Potential secret blocked at GitHub publish boundary")
         prs = self.pages(repo, f"pulls?state=all&head={repo.repository.split('/')[0]}:{branch}")
         if len(prs) > 1:
             raise GuardError("Multiple PRs for task branch")
@@ -182,7 +315,12 @@ class GitHub:
                 self.api(repo, "PATCH", f"git/refs/heads/{branch}", json={"sha": head, "force": False})
             else:
                 self.api(repo, "POST", "git/refs", json={"ref": f"refs/heads/{branch}", "sha": head})
-        body = f"{marker}\n仕様 v{task.spec_version} {d['spec_hash']}\nCloses #{d['issue']}\n\n{d.get('implementation_summary', '')}"
+        authority_hash = d.get("requirements_hash", d.get("spec_hash", ""))
+        authority_issue = d.get("requirements_issue", d.get("issue"))
+        body = (
+            f"{marker}\n要件 {authority_hash}\nCloses #{authority_issue}\n\n"
+            f"{d.get('implementation_summary', '')}"
+        )
         pr = (
             prs[0]
             if prs
@@ -195,6 +333,7 @@ class GitHub:
                     "head": branch,
                     "base": repo.base,
                     "body": body,
+                    "draft": task.workflow_version == 2,
                 },
             )
         )
@@ -223,6 +362,28 @@ class GitHub:
             "reviewer",
             json={"commit_id": result.head_sha, "body": body, "event": event},
         )["id"]
+
+    def ready_for_review(self, repo, task):
+        pr = self.api(repo, "GET", f"pulls/{task.data['pr']}")
+        if not pr.get("draft"):
+            return {"ready": True}
+        response = self.clients["publisher"].post(
+            "/graphql",
+            json={
+                "query": (
+                    "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id})"
+                    "{pullRequest{id isDraft}}}"
+                ),
+                "variables": {"id": pr["node_id"]},
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("errors") or payload.get("data", {}).get(
+            "markPullRequestReadyForReview", {}
+        ).get("pullRequest", {}).get("isDraft") is not False:
+            raise GuardError("GitHub did not mark the Draft PR ready for review")
+        return {"ready": True}
 
     def snapshot(self, repo, task):
         d = task.data
@@ -276,7 +437,11 @@ class GitHub:
             "review_ok": review.get("state") == "APPROVED"
             and review.get("commit_id") == head
             and not any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()),
-            "spec_hash": digest(source.get(f"docs/tasks/{task.id}/spec.md", "")),
+            "spec_hash": (
+                task.data.get("requirements_hash", "")
+                if task.workflow_version == 2
+                else digest(source.get(f"docs/tasks/{task.id}/spec.md", ""))
+            ),
             "checks": [
                 {
                     "name": c["name"],
@@ -301,8 +466,9 @@ class GitHub:
 class MockGitHub:
     """Persistent deterministic simulator. Never calls GitHub."""
 
-    def __init__(self, db, settings):
+    def __init__(self, db, settings, scanner=None):
         self.db, self.settings = db, settings
+        self.scanner = scanner or SecretScanner(b"mock-github-adapter-salt")
 
     def read(self, key, default=None):
         with self.db.transaction() as s:
@@ -328,14 +494,113 @@ class MockGitHub:
     def source(self, repo, sha):
         return self.read("source:" + sha, {"src/example.py": "def greeting():\n    return 'hello'\n"})
 
+    def source_context(self, repo, sha):
+        source = self.source(repo, sha)
+        files, manifest = {}, []
+        for path, content in source.items():
+            allowed = any(fnmatch.fnmatch(path, pattern) for pattern in repo.allowed_paths)
+            report = self.scanner.scan_text(content)
+            forwarded = allowed and not report.blocked
+            if forwarded:
+                files[path] = content
+            manifest.append(
+                {
+                    "path": path,
+                    "mode": "100644",
+                    "size": len(content.encode()),
+                    "content_hash": digest(content),
+                    "mime_type": mimetypes.guess_type(path)[0] or "text/plain",
+                    "forwarded": forwarded,
+                    "reason": "" if forwarded else ("secret" if report.blocked else "path_or_type"),
+                }
+            )
+        return {"files": files, "manifest": manifest}
+
     def issue(self, repo, task, body):
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub Issue boundary")
         value = self.read("issue:" + task.id)
         if value is None:
-            value = {"number": int(hashlib.sha256(task.id.encode()).hexdigest()[:6], 16), "body": body}
+            value = {
+                "number": int(hashlib.sha256(task.id.encode()).hexdigest()[:6], 16),
+                "body": body,
+                "updated_at": "2026-01-01T00:00:00Z",
+                "revision": 1,
+            }
             self.write("issue:" + task.id, value)
         return value["number"]
 
+    def _issue_key(self, issue_number):
+        matches = []
+        with self.db.transaction() as s:
+            for operation in s.scalars(select(Operation).where(Operation.key.like("mock:issue:%"))):
+                if operation.data.get("number") == int(issue_number):
+                    matches.append(operation.key.removeprefix("mock:"))
+        if len(matches) != 1:
+            raise GuardError("Unknown or duplicate mock Issue")
+        return matches[0]
+
+    def issue_reference(self, repo, issue_number):
+        value = self.read(self._issue_key(issue_number))
+        body = value.get("body", "")
+        revision = value.get("revision", 1)
+        return {
+            "number": value["number"],
+            "url": f"https://github.com/{repo.repository}/issues/{value['number']}",
+            "body": body,
+            "body_hash": digest(body),
+            "updated_at": value.get("updated_at", "2026-01-01T00:00:00Z"),
+            "etag": f'"mock-{revision}"',
+        }
+
+    def update_issue_body(self, repo, issue_number, body, *, expected_etag, preflight_confirmed):
+        if not preflight_confirmed or not expected_etag:
+            raise GuardError("Conditional Issue update is unavailable; publish a proposal comment")
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub Issue boundary")
+        key = self._issue_key(issue_number)
+        value = self.read(key)
+        expected = f'"mock-{value.get("revision", 1)}"'
+        if expected_etag != expected:
+            raise GuardError("GitHub Issue changed concurrently")
+        value.update(
+            body=body,
+            revision=value.get("revision", 1) + 1,
+            updated_at=f"2026-01-01T00:00:{value.get('revision', 1):02d}Z",
+        )
+        self.write(key, value)
+        return self.issue_reference(repo, issue_number)
+
+    def comment_issue(self, repo, issue_number, body):
+        if not body.strip():
+            raise GuardError("Issue comment cannot be empty")
+        if self.scanner.scan_text(body).blocked:
+            raise GuardError("Potential secret blocked at GitHub comment boundary")
+        self._issue_key(issue_number)
+        key = f"issue-comments:{issue_number}"
+        comments = self.read(key, [])
+        number = len(comments) + 1
+        result = {
+            "id": number,
+            "url": f"https://github.com/{repo.repository}/issues/{issue_number}#issuecomment-{number}",
+            "body": body,
+        }
+        comments.append(result)
+        self.write(key, comments)
+        return {"id": result["id"], "url": result["url"]}
+
+    def set_issue_state(self, repo, issue_number, state):
+        if state not in {"open", "closed"}:
+            raise GuardError("Unsupported Issue state")
+        key = self._issue_key(issue_number)
+        value = self.read(key)
+        value["state"] = state
+        self.write(key, value)
+        return {"number": value["number"], "state": state}
+
     def publish(self, repo, task, files, key):
+        if any(content and self.scanner.scan_text(content).blocked for content in files.values()):
+            raise GuardError("Potential secret blocked at GitHub publish boundary")
         existing = self.read(key)
         if existing:
             return existing
@@ -347,7 +612,7 @@ class MockGitHub:
                 source[path] = content
         head = hashlib.sha1(key.encode()).hexdigest()
         self.write("source:" + head, source)
-        number = self.issue(repo, task, "")
+        number = task.data.get("requirements_issue") or self.issue(repo, task, "")
         result = {"pr": number, "head_sha": head, "pr_url": f"https://example.invalid/pull/{number}"}
         self.write(
             task.id,
@@ -358,7 +623,7 @@ class MockGitHub:
                 "author": repo.publisher_login,
                 "marker": task.id,
                 "state": "open",
-                "draft": False,
+                "draft": task.workflow_version == 2,
                 "mergeable": True,
                 "head_sha": head,
                 "base_sha": self.base(repo),
@@ -368,7 +633,11 @@ class MockGitHub:
                 "changed_lines": 20,
                 "protection_ok": True,
                 "review_ok": False,
-                "spec_hash": digest(source[f"docs/tasks/{task.id}/spec.md"]),
+                "spec_hash": (
+                    task.data.get("requirements_hash", "")
+                    if task.workflow_version == 2
+                    else digest(source[f"docs/tasks/{task.id}/spec.md"])
+                ),
                 "checks": [
                     {"name": c.name, "app_id": c.app_id, "head_sha": head, "conclusion": "success"}
                     for c in repo.checks
@@ -383,6 +652,12 @@ class MockGitHub:
         snap["review_ok"] = result.decision == "approve"
         self.write(task.id, snap)
         return 1
+
+    def ready_for_review(self, repo, task):
+        snap = self.read(task.id)
+        snap["draft"] = False
+        self.write(task.id, snap)
+        return {"ready": True}
 
     def snapshot(self, repo, task):
         snap = self.read(task.id)

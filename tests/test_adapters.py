@@ -1,7 +1,9 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -9,9 +11,9 @@ from fastapi.testclient import TestClient
 from test_workflow import step
 
 from agent_team.adapters.codex import CodexRunner, MockRunner
-from agent_team.adapters.github import GitHub
+from agent_team.adapters.github import GitHub, MockGitHub
 from agent_team.api import create_app
-from agent_team.contracts import RunRequest
+from agent_team.contracts import CommandRequest, PatchProposal, RunRequest, WorkspaceReadRequest
 from agent_team.db import Task
 from agent_team.policy import GuardError
 
@@ -84,6 +86,193 @@ def test_new_template_branch_read_retries_only_expected_transient_errors(team, m
     assert not responses
 
 
+def test_issue_authority_conditional_update_and_comment_fallback(team):
+    settings, db, _, _, _, _ = team
+    github = MockGitHub(db, settings)
+    task = Task(id="TASK-ISSUE", repo="demo", data={"summary": "requirements"})
+    repo = settings.repos["demo"]
+    issue_number = github.issue(repo, task, "first")
+    initial = github.issue_reference(repo, issue_number)
+
+    updated = github.update_issue_body(
+        repo,
+        issue_number,
+        "second",
+        expected_etag=initial["etag"],
+        preflight_confirmed=True,
+    )
+    assert updated["body"] == "second" and updated["body_hash"] != initial["body_hash"]
+    with pytest.raises(GuardError, match="concurrently"):
+        github.update_issue_body(
+            repo,
+            issue_number,
+            "lost update",
+            expected_etag=initial["etag"],
+            preflight_confirmed=True,
+        )
+    assert github.issue_reference(repo, issue_number)["body"] == "second"
+
+    with pytest.raises(GuardError, match="proposal comment"):
+        github.update_issue_body(
+            repo,
+            issue_number,
+            "third",
+            expected_etag=updated["etag"],
+            preflight_confirmed=False,
+        )
+    comment = github.comment_issue(repo, issue_number, "本文変更案: third")
+    assert "issuecomment" in comment["url"]
+
+
+def test_live_issue_update_sends_if_match_and_rejects_stale(team):
+    settings = team[0]
+    seen = []
+
+    def request(request):
+        seen.append(request)
+        if request.method == "PATCH":
+            assert request.headers["if-match"] == '"etag-1"'
+            return httpx.Response(412, request=request)
+        return httpx.Response(500, request=request)
+
+    github = GitHub(settings, {})
+    github.clients["publisher"] = httpx.Client(
+        base_url="https://api.github.com", transport=httpx.MockTransport(request)
+    )
+    with pytest.raises(GuardError, match="concurrently"):
+        github.update_issue_body(
+            settings.repos["demo"],
+            2,
+            "new body",
+            expected_etag='"etag-1"',
+            preflight_confirmed=True,
+        )
+    assert len(seen) == 1
+
+
+def test_codex_runner_blocks_secret_before_model_process(tmp_path):
+    runner = CodexRunner(
+        api_key="test-auth-value",
+        workspace=tmp_path,
+        scan_salt=b"test-only-worker-scan-salt",
+    )
+    called = False
+
+    async def process(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("model process must not start")
+
+    runner.sandbox_verified = True
+    runner.process = process
+    request = RunRequest(
+        job_id="secret-boundary",
+        role="cto",
+        kind="clarify",
+        task_id="TASK-1",
+        spec_version=0,
+        spec_hash="",
+        base_sha="",
+        head_sha="",
+        prompt="Authorization: Bearer " + "X" * 30,
+        files={},
+        test_commands=[],
+        model="",
+        timeout=30,
+    )
+    with pytest.raises(GuardError, match="prompt boundary"):
+        asyncio.run(runner.run(request))
+    assert called is False
+
+
+def test_internal_api_blocks_secret_before_task_creation(team):
+    settings, db, _, _, _, _ = team
+    app = create_app(db, settings, "test-token-that-is-at-least-thirty-two-bytes")
+    client = TestClient(app)
+    response = client.post(
+        "/commands",
+        json={
+            "action": "request",
+            "event_id": "secret-event",
+            "actor": "demo-owner",
+            "guild": "demo-guild",
+            "channel": "demo-channel",
+            "repo": "demo",
+            "text": "sk-" + "Z" * 32,
+        },
+        headers={"Authorization": "Bearer test-token-that-is-at-least-thirty-two-bytes"},
+    )
+    assert response.status_code == 409
+    assert "Discord input boundary" in response.json()["detail"]
+
+
+def test_v2_patch_broker_applies_only_typed_patch_and_allowlisted_command(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("value = 1\n")
+    runner = CodexRunner(
+        api_key="test-auth-value",
+        workspace=tmp_path,
+        scan_salt=b"test-only-worker-scan-salt",
+    )
+    request = RunRequest(
+        job_id="broker",
+        role="backend_integrator",
+        kind="implement",
+        task_id="TASK-2",
+        spec_version=1,
+        spec_hash="sha256:req",
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        prompt="safe",
+        files={"app.py": "value = 1\n"},
+        test_commands=[["python", "-m", "pytest"]],
+        model="",
+        timeout=30,
+    )
+    result = SimpleNamespace(
+        workspace_reads=[WorkspaceReadRequest(paths=["app.py"])],
+        commands=[CommandRequest(argv=["python", "-m", "pytest"])],
+        patches=[
+            PatchProposal(
+                patch="--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+                rationale="要件を満たす",
+            )
+        ],
+    )
+    asyncio.run(
+        runner.apply_proposals(
+            request,
+            result,
+            source,
+            tmp_path,
+            {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+            time.monotonic(),
+        )
+    )
+    assert (source / "app.py").read_text() == "value = 2\n"
+
+
+def test_model_repository_snapshot_excludes_secret_and_disallowed_content(team):
+    settings, _, github, *_ = team
+    sha = "d" * 40
+    secret_value = "ghp_" + "S" * 36
+    github.write(
+        "source:" + sha,
+        {
+            "src/safe.py": "answer = 42\n",
+            "src/secret.py": f"token = '{secret_value}'\n",
+            ".github/workflows/ci.yml": "untrusted control data",
+        },
+    )
+    snapshot = github.source_context(settings.repos["demo"], sha)
+    assert snapshot["files"] == {"src/safe.py": "answer = 42\n"}
+    assert secret_value not in repr(snapshot["manifest"])
+    reasons = {item["path"]: item["reason"] for item in snapshot["manifest"]}
+    assert reasons["src/secret.py"] == "secret"
+    assert reasons[".github/workflows/ci.yml"] == "path_or_type"
+
+
 def test_internal_api_auth_and_bot_rejection(team):
     settings, db, _, _, _, _ = team
     app = create_app(db, settings, "test-token")
@@ -118,9 +307,9 @@ def test_internal_api_auth_and_bot_rejection(team):
     assert coordination.status_code == 200
     assert coordination.json()["action"] == "delegate"
     assert {item["role"] for item in coordination.json()["delegations"]} == {
-        "upstream",
-        "downstream",
-        "sre",
+        "cto",
+        "backend_integrator",
+        "security_sre",
     }
     specialist = client.post(
         "/specialist-turn",

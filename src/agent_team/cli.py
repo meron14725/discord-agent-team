@@ -63,7 +63,10 @@ async def demo(path, artifacts):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["demo", "migrate", "gateway", "validate-config", "preflight"])
+    parser.add_argument(
+        "command",
+        choices=["demo", "migrate", "gateway", "renderer", "validate-config", "preflight"],
+    )
     args = parser.parse_args()
     if args.command == "demo":
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +80,10 @@ def main():
         from .adapters.discord import serve
 
         asyncio.run(serve())
+    elif args.command == "renderer":
+        import uvicorn
+
+        uvicorn.run("agent_team.renderer:create_renderer", factory=True, host="0.0.0.0", port=8091)
     elif args.command == "validate-config":
         settings = load_settings()
         print(f"Configuration valid: mode={settings.mode}, repos={','.join(settings.repos)}")

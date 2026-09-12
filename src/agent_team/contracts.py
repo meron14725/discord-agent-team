@@ -2,12 +2,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .roles import RoleId
+
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-SpecialistRole = Literal["upstream", "downstream", "sre"]
+# Compatibility name retained for v1 callers. Validation now accepts any registry-compatible role ID;
+# membership, enabled state, capabilities, and routing belong to RoleRegistry.
+SpecialistRole = RoleId
 
 
 class Finding(Strict):
@@ -172,7 +176,7 @@ class CoordinationDecision(Strict):
     action: Literal["reply", "delegate", "task", "clarify"]
     reply: str = Field(min_length=1, max_length=1500)
     task_summary: str = Field(max_length=2000)
-    delegations: list[CoordinationMessage] = Field(max_length=3)
+    delegations: list[CoordinationMessage] = Field(max_length=10)
 
     @model_validator(mode="after")
     def action_payload_matches(self):
@@ -207,14 +211,28 @@ class Result(Strict):
     risks: list[str]
     coordination: CoordinationDecision | None
     specialist: SpecialistDecision | None
+    workspace_reads: list["WorkspaceReadRequest"] = Field(default_factory=list, max_length=4)
+    commands: list["CommandRequest"] = Field(default_factory=list, max_length=4)
+    patches: list["PatchProposal"] = Field(default_factory=list, max_length=10)
     # Files and test results are collected by the runner, never trusted from LLM prose.
 
 
 class RunRequest(Strict):
     auth_mode: Literal["chatgpt", "api_key"] = "chatgpt"
     job_id: str
-    role: Literal["coordinator", "upstream", "downstream", "sre"]
-    kind: Literal["coordinate", "respond", "clarify", "implement", "fix", "review"]
+    role: RoleId
+    kind: Literal[
+        "coordinate",
+        "respond",
+        "clarify",
+        "draft_requirements",
+        "consult",
+        "plan",
+        "review_plan",
+        "implement",
+        "fix",
+        "review",
+    ]
     task_id: str
     spec_version: int
     spec_hash: str
@@ -240,3 +258,130 @@ class RunResponse(Strict):
     usage: dict[str, int]
     cli_version: str
     elapsed_seconds: float
+
+
+class GitHubIssueReference(Strict):
+    repository: str
+    issue_number: int = Field(gt=0)
+    issue_url: str
+    updated_at: str
+    body_hash: str
+
+
+class RequirementsDraft(Strict):
+    issue: GitHubIssueReference
+    markdown: str = Field(min_length=1)
+    acceptance_ids: list[str] = Field(min_length=1)
+    unresolved_topics: list[str] = Field(default_factory=list)
+
+
+class RequirementsQuestion(Strict):
+    topic_id: str
+    question: str = Field(min_length=1, max_length=1500)
+    recommendation: str = Field(min_length=1, max_length=1500)
+    choices: list[str] = Field(min_length=2, max_length=3)
+
+
+class RequirementsApprovalRequest(Strict):
+    task_id: str
+    issue: GitHubIssueReference
+    explanation_hash: str
+    confirmation_id: str
+
+
+class ImplementationHandoff(Strict):
+    task_id: str
+    topic_id: str
+    requirements: GitHubIssueReference
+    requirements_approval_id: str
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    target_role: RoleId
+
+
+class ImplementationPlanResult(Strict):
+    issue_number: int = Field(gt=0)
+    version: int = Field(gt=0)
+    path: str
+    content_hash: str
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    acceptance_ids: list[str] = Field(min_length=1)
+
+
+class PlanReviewResult(Strict):
+    decision: Literal["approve", "request_changes", "needs_human"]
+    plan_hash: str
+    findings: list[Finding]
+    coverage: list[Coverage]
+
+
+class ConsultationRequest(Strict):
+    task_id: str
+    topic_id: str
+    requester_role: RoleId
+    consultant_role: RoleId
+    question: str = Field(min_length=1, max_length=3000)
+
+
+class ConsultationRecord(Strict):
+    task_id: str
+    topic_id: str
+    ordinal: int = Field(ge=1, le=5)
+    question_summary: str = Field(min_length=1)
+    decision_criteria: str = Field(min_length=1)
+    recommendation: str = Field(min_length=1)
+    adopted_result: str = ""
+    unresolved_summary: str = ""
+    references: list[str] = Field(default_factory=list)
+
+
+class DelegationRequest(Strict):
+    task_id: str
+    topic_id: str
+    source_role: RoleId
+    target_role: RoleId
+    purpose: str = Field(min_length=1, max_length=3000)
+    expected_artifact: str = Field(min_length=1, max_length=1000)
+    parent_delegation_id: str = ""
+
+
+class DelegationResponse(Strict):
+    delegation_id: str
+    status: Literal["accepted", "questioned", "answered", "completed", "blocked"]
+    summary: str = Field(min_length=1, max_length=3000)
+    artifact_reference: str = ""
+
+
+class ExplanationRequest(Strict):
+    source_kind: Literal["requirements", "plan"]
+    source_hash: str
+    source_markdown: str = Field(min_length=1)
+
+
+class ExplanationArtifact(Strict):
+    source_kind: Literal["requirements", "plan"]
+    source_hash: str
+    html_path: str
+    html_hash: str
+    png_path: str
+    png_hash: str
+
+
+class ApprovalCommand(Strict):
+    task_id: str
+    stage: Literal["requirements", "plan", "merge"]
+    target_hash: str
+    target_sha: str = ""
+    confirmation_id: str
+
+
+class WorkspaceReadRequest(Strict):
+    paths: list[str] = Field(min_length=1, max_length=100)
+
+
+class CommandRequest(Strict):
+    argv: list[str] = Field(min_length=1, max_length=30)
+
+
+class PatchProposal(Strict):
+    patch: str = Field(min_length=1)
+    rationale: str = Field(min_length=1, max_length=3000)

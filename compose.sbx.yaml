@@ -7,9 +7,10 @@ services:
     environment:
       TEAM_COORDINATOR_URL: http://host.docker.internal:8091
       TEAM_SPECIALIST_URL: http://host.docker.internal:8092
-      TEAM_SPECIALIST_URLS: '{"upstream":"http://host.docker.internal:8092","downstream":"http://host.docker.internal:8094","sre":"http://host.docker.internal:8093"}'
+      TEAM_SPECIALIST_URLS: '{"upstream":"http://host.docker.internal:8092","downstream":"http://host.docker.internal:8094","sre":"http://host.docker.internal:8093","frontend_ux":"http://host.docker.internal:8095","qa":"http://host.docker.internal:8095","evaluation_manager":"http://host.docker.internal:8095","analyst":"http://host.docker.internal:8095"}'
       TEAM_UPSTREAM_URL: http://host.docker.internal:8090
       TEAM_DOWNSTREAM_URL: http://host.docker.internal:8090
+      TEAM_WORKFLOW_V2_WORKER_URL: http://host.docker.internal:8095
 secrets:
   github_reviewer_private_key:
     file: ./secrets/github_reviewer_private_key.pem

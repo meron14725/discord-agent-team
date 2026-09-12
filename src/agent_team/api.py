@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import contextlib
+import hashlib
 import hmac
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -13,6 +16,7 @@ from sqlalchemy import select
 from .adapters.codex import MockRunner, RemoteRunner
 from .adapters.github import GitHub, MockGitHub
 from .config import load_settings, secret
+from .consultations import ConsultationService
 from .contracts import (
     CoordinationDecision,
     CoordinationMessage,
@@ -23,11 +27,24 @@ from .contracts import (
     SpecialistRole,
 )
 from .coordination import validate_specialist_handoffs
-from .db import Database, Event, Job, Outbox, Task, task_lock
+from .db import (
+    Artifact,
+    Database,
+    Delegation,
+    Event,
+    Job,
+    Outbox,
+    ProjectWorkspace,
+    Task,
+    TaskProjection,
+    TopicThread,
+    task_lock,
+)
 from .discord_sre import DiscordChangeService
 from .engine import Engine
 from .policy import GuardError
 from .prompt_context import load_agent_prompt_context
+from .redaction import SecretScanner
 from .service import TaskService
 
 
@@ -45,6 +62,7 @@ class Command(BaseModel):
     hash: str = ""
     head_sha: str = ""
     base_sha: str = ""
+    confirmation_id: str = ""
     bot: bool = False
 
 
@@ -65,7 +83,7 @@ class SpecialistCommand(CoordinateCommand):
     handoff_depth: Literal[0, 1, 2] = 0
     handoff_round: int = Field(default=0, ge=0, le=2)
     handoff_source_roles: list[SpecialistRole] = Field(default_factory=list, max_length=2)
-    visited_roles: list[SpecialistRole] = Field(default_factory=list, max_length=3)
+    visited_roles: list[SpecialistRole] = Field(default_factory=list, max_length=10)
 
     @model_validator(mode="after")
     def handoff_state_matches_depth(self):
@@ -109,6 +127,18 @@ class DiscordChangeCompletion(BaseModel):
     error: str = Field(default="", max_length=1000)
 
 
+class ConsultationCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str
+    guild: str
+    channel: str
+    task_id: str
+    topic_id: str
+    requester_role: SpecialistRole
+    consultant_role: SpecialistRole
+    question: str = Field(min_length=1, max_length=3000)
+
+
 def explicitly_addresses_all(text: str) -> bool:
     compact = "".join(text.casefold().split())
     if "他のメンバーにも" in compact:
@@ -141,7 +171,11 @@ def requests_discord_change(text: str) -> bool:
     return target and action and not informational
 
 
-def enforce_explicit_audience(decision: CoordinationDecision, text: str) -> CoordinationDecision:
+def enforce_explicit_audience(
+    decision: CoordinationDecision,
+    text: str,
+    roles: tuple[str, ...] = ("upstream", "downstream", "sre"),
+) -> CoordinationDecision:
     if decision.action != "reply" or not explicitly_addresses_all(text):
         return decision
     return CoordinationDecision(
@@ -156,7 +190,7 @@ def enforce_explicit_audience(decision: CoordinationDecision, text: str) -> Coor
                     "あなた自身の立場と言葉で自然に応答してください。作業を実行したとは主張しないでください。"
                 ),
             )
-            for role in ("upstream", "downstream", "sre")
+            for role in roles
         ],
     )
 
@@ -172,11 +206,13 @@ def create_app(db=None, settings=None, token=None):
         db = Database(url)
     db.migrate()
     token = token or secret("INTERNAL_TOKEN")
-    prompt_context = load_agent_prompt_context()
+    scanner = SecretScanner(hashlib.sha256(token.encode()).digest())
+    prompt_context = load_agent_prompt_context(settings.role_registry)
     service = TaskService(db, settings)
     discord_changes = DiscordChangeService(db, settings)
+    consultations = ConsultationService(db, settings)
     github = (
-        MockGitHub(db, settings)
+        MockGitHub(db, settings, scanner=scanner)
         if settings.mode == "mock"
         else GitHub(
             settings,
@@ -188,10 +224,16 @@ def create_app(db=None, settings=None, token=None):
             reviewer_private_key=(
                 secret("GITHUB_REVIEWER_PRIVATE_KEY") if settings.github_reviewer_app else ""
             ),
+            scanner=scanner,
         )
     )
     runner = MockRunner() if settings.mode == "mock" else RemoteRunner(settings, secret("WORKER_TOKEN"))
     engine = Engine(db, settings, github, runner, os.environ.get("ARTIFACTS_DIR", "artifacts"))
+    enabled_roles = {
+        role.id: "、".join(role.responsibilities)
+        for role in settings.role_registry.entries
+        if role.enabled and role.discord_enabled
+    }
 
     @asynccontextmanager
     async def lifespan(app):
@@ -224,9 +266,14 @@ def create_app(db=None, settings=None, token=None):
         return {"status": "ok", "mode": settings.mode}
 
     @app.post("/commands", dependencies=[Depends(authenticate)])
-    def command(command: Command):
+    async def command(command: Command):
         try:
-            return service.command(**command.model_dump())
+            if scanner.scan_text(command.text).blocked:
+                raise GuardError("Potential secret blocked at Discord input boundary")
+            result = service.command(**command.model_dump())
+            if command.action == "cancel":
+                await engine.cancel_task(result["id"])
+            return result
         except GuardError as e:
             raise HTTPException(409, str(e)) from e
         except ValueError as e:
@@ -235,6 +282,8 @@ def create_app(db=None, settings=None, token=None):
     @app.post("/coordinate", dependencies=[Depends(authenticate)])
     async def coordinate(command: CoordinateCommand):
         try:
+            if scanner.scan_text(command.text + "\n" + "\n".join(command.history)).blocked:
+                raise GuardError("Potential secret blocked at Discord input boundary")
             service.authorize(command.actor, command.guild, command.channel)
             if sum(len(item) for item in command.history) > 30_000:
                 raise GuardError("Conversation context is too large")
@@ -251,11 +300,7 @@ def create_app(db=None, settings=None, token=None):
                     {
                         "current_owner_message": command.text,
                         "recent_discord_context_oldest_first": command.history,
-                        "available_roles": {
-                            "upstream": "要件整理・設計・レビュー",
-                            "downstream": "実装・修正",
-                            "sre": "Discord・実行基盤・運用・障害対応",
-                        },
+                        "available_roles": enabled_roles,
                         "default_repository_alias": settings.default_repo,
                         "trusted_company_memory": prompt_context.company_memory,
                         "trusted_company_policy": prompt_context.company_policy,
@@ -269,7 +314,23 @@ def create_app(db=None, settings=None, token=None):
                 timeout=settings.coordination_timeout,
             )
             response = await runner.run(request)
-            return enforce_explicit_audience(response.result.coordination, command.text)
+            audience = tuple(
+                role.id
+                for role in settings.role_registry.entries
+                if role.enabled and role.discord_enabled and role.id != "coordinator"
+            )
+            decision = enforce_explicit_audience(
+                response.result.coordination,
+                command.text,
+                audience,
+            )
+            if not explicitly_addresses_all(command.text) and len(decision.delegations) > 4:
+                raise GuardError("Coordinator may select at most four specialists")
+            for delegation in decision.delegations:
+                role = settings.role_registry.role(delegation.role)
+                if not role.enabled or not role.discord_enabled or role.id == "coordinator":
+                    raise GuardError("Coordinator selected an unavailable specialist")
+            return decision
         except GuardError as error:
             raise HTTPException(409, str(error)) from error
         except Exception as error:
@@ -278,13 +339,25 @@ def create_app(db=None, settings=None, token=None):
     @app.post("/specialist-turn", dependencies=[Depends(authenticate)])
     async def specialist_turn(command: SpecialistCommand):
         try:
+            if scanner.scan_text(
+                command.text + "\n" + command.instruction + "\n" + "\n".join(command.history)
+            ).blocked:
+                raise GuardError("Potential secret blocked at Discord input boundary")
             from collections import Counter
 
             service.authorize(command.actor, command.guild, command.channel)
             if sum(len(item) for item in command.history) > 30_000:
                 raise GuardError("Conversation context is too large")
             snapshot = {}
-            if command.role == "sre":
+            canonical_role = settings.role_registry.resolve(command.role)
+            role_definition = settings.role_registry.role(canonical_role)
+            if (
+                not role_definition.enabled
+                or not role_definition.discord_enabled
+                or canonical_role == "coordinator"
+            ):
+                raise GuardError("Specialist role is unavailable")
+            if canonical_role == "security_sre":
                 if command.discord_snapshot and command.discord_snapshot.guild_id != command.guild:
                     raise GuardError("Discord snapshot guild mismatch")
                 with db.transaction() as session:
@@ -341,21 +414,16 @@ def create_app(db=None, settings=None, token=None):
                             "visited_roles": sorted(set(command.visited_roles) | {command.role}),
                             "maximum_targets": 2,
                         },
-                        "available_roles": {
-                            "coordinator": "担当選択・重複排除・優先順位・進行管理",
-                            "upstream": "要件整理・設計・計画・リスク分析・独立レビュー",
-                            "downstream": "実装・デバッグ・テスト・コード変更",
-                            "sre": "Discord管理・実行基盤・監視・障害対応・安全な運用",
-                        },
+                        "available_roles": enabled_roles,
                         "discord_change_plan_required": (
-                            command.role == "sre"
+                            canonical_role == "security_sre"
                             and command.handoff_depth != 2
                             and requests_discord_change(command.text)
                         ),
                         "trusted_platform_snapshot": snapshot,
                         "trusted_company_memory": prompt_context.company_memory,
                         "trusted_company_policy": prompt_context.company_policy,
-                        "trusted_role_policy": prompt_context.role_policies[command.role],
+                        "trusted_role_policy": prompt_context.role_policies[canonical_role],
                     },
                     ensure_ascii=False,
                 ),
@@ -367,7 +435,7 @@ def create_app(db=None, settings=None, token=None):
             response = await runner.run(request)
             decision = response.result.specialist
             plan_required = (
-                command.role == "sre"
+                canonical_role == "security_sre"
                 and command.handoff_depth != 2
                 and requests_discord_change(command.text)
             )
@@ -392,7 +460,7 @@ def create_app(db=None, settings=None, token=None):
             ):
                 raise GuardError("SRE omitted the required typed Discord change plan")
             if decision.sre_plan is not None:
-                if command.role != "sre":
+                if canonical_role != "security_sre":
                     raise GuardError("Discord SRE plans are restricted to the SRE role")
                 if command.handoff_depth == 2:
                     raise GuardError("Internal handoff answers cannot propose Discord changes")
@@ -400,6 +468,17 @@ def create_app(db=None, settings=None, token=None):
                     raise GuardError("Discord SRE changes require an explicit owner request")
                 if decision.sre_plan.guild_id != command.guild:
                     raise GuardError("Discord SRE plan guild mismatch")
+            allowed_targets = {
+                settings.role_registry.resolve(role) for role in role_definition.consultable_roles
+            }
+            for handoff in decision.handoffs:
+                target = settings.role_registry.role(handoff.role)
+                if (
+                    not target.enabled
+                    or not target.discord_enabled
+                    or target.id not in allowed_targets
+                ):
+                    raise GuardError("Specialist selected a disallowed handoff target")
             return validate_specialist_handoffs(
                 decision,
                 source_role=command.role,
@@ -417,6 +496,30 @@ def create_app(db=None, settings=None, token=None):
     def propose_discord_change(command: DiscordChangeProposal):
         try:
             return discord_changes.propose(**command.model_dump())
+        except GuardError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/consultations", dependencies=[Depends(authenticate)])
+    def request_consultation(command: ConsultationCommand):
+        try:
+            if scanner.scan_text(command.question).blocked:
+                raise GuardError("Potential secret blocked at consultation boundary")
+            with db.transaction() as session:
+                task = task_lock(session, command.task_id)
+                service.authorize(
+                    command.actor,
+                    command.guild,
+                    command.channel,
+                    task,
+                )
+            consultation_id = consultations.request(
+                command.task_id,
+                topic_id=command.topic_id,
+                requester_role=command.requester_role,
+                consultant_role=command.consultant_role,
+                question=command.question,
+            )
+            return {"consultation_id": consultation_id, "status": "queued"}
         except GuardError as error:
             raise HTTPException(409, str(error)) from error
 
@@ -452,15 +555,41 @@ def create_app(db=None, settings=None, token=None):
         import time
 
         with db.transaction() as s:
-            return [
-                {"id": o.id, "task_id": o.task_id, **o.data}
-                for o in s.scalars(
-                    select(Outbox)
-                    .where(Outbox.sent.is_(False), Outbox.next_try <= time.time())
-                    .order_by(Outbox.created)
-                    .limit(30)
-                )
-            ]
+            items = []
+            for out in s.scalars(
+                select(Outbox)
+                .where(Outbox.sent.is_(False), Outbox.next_try <= time.time())
+                .order_by(Outbox.created)
+                .limit(30)
+            ):
+                item = {"id": out.id, "task_id": out.task_id, **out.data}
+                if out.data.get("project_status"):
+                    projection = s.scalar(
+                        select(TaskProjection).where(TaskProjection.task_id == out.task_id)
+                    )
+                    item["status_message_id"] = (
+                        projection.status_message_id if projection else ""
+                    )
+                if artifact_ids := out.data.get("artifact_ids"):
+                    attachments = []
+                    for artifact_id in artifact_ids:
+                        artifact = s.get(Artifact, artifact_id)
+                        if artifact is None or artifact.task_id != out.task_id:
+                            raise HTTPException(409, "Explanation artifact is unavailable")
+                        for kind in ("html", "png"):
+                            path = artifact.data.get(f"{kind}_path", "")
+                            content = Path(path).read_bytes()
+                            if len(content) > settings.max_bytes:
+                                raise HTTPException(409, "Explanation artifact is too large")
+                            attachments.append(
+                                {
+                                    "filename": f"{artifact.data['source_kind']}.{kind}",
+                                    "content_base64": base64.b64encode(content).decode("ascii"),
+                                }
+                            )
+                    item["attachments"] = attachments
+                items.append(item)
+            return items
 
     @app.post("/outbox/{message_id}/ack", dependencies=[Depends(authenticate)])
     def ack(message_id: str, payload: dict):
@@ -470,6 +599,51 @@ def create_app(db=None, settings=None, token=None):
                 raise HTTPException(404)
             out.sent = True
             out.data = {**out.data, "message_id": str(payload["message_id"])}
+            if out.data.get("project_status"):
+                task = task_lock(s, out.task_id)
+                workspace = s.scalar(
+                    select(ProjectWorkspace).where(
+                        ProjectWorkspace.repository == task.data["repository"]
+                    )
+                )
+                projection = s.scalar(
+                    select(TaskProjection).where(TaskProjection.task_id == task.id)
+                )
+                if projection:
+                    projection.status_message_id = str(payload["message_id"])
+                    projection.projection_hash = out.data.get("projection_hash", "")
+                else:
+                    s.add(
+                        TaskProjection(
+                            task_id=task.id,
+                            project_workspace_id=workspace.id,
+                            status_message_id=str(payload["message_id"]),
+                            projection_hash=out.data.get("projection_hash", ""),
+                        )
+                    )
+            if out.data.get("create_topic_thread"):
+                topic = s.get(TopicThread, out.data["topic_record_id"])
+                if topic is None:
+                    raise HTTPException(404)
+                topic.thread_id = str(payload["thread_id"])
+                task = task_lock(s, out.task_id)
+                if not task.thread_id:
+                    task.thread_id = topic.thread_id
+                task.data = {
+                    **task.data,
+                    "topic_thread_ids": sorted(
+                        {*task.data.get("topic_thread_ids", []), topic.thread_id}
+                    ),
+                }
+            if out.data.get("archive_topic_thread"):
+                topic = s.get(TopicThread, out.data["topic_record_id"])
+                if topic is None:
+                    raise HTTPException(404)
+                topic.status = "archived"
+            if out.data.get("delegation_log"):
+                delegation = s.get(Delegation, out.data["delegation_id"])
+                if delegation:
+                    delegation.request_message_id = str(payload["message_id"])
             if out.data.get("create_thread"):
                 task = task_lock(s, out.task_id)
                 task.thread_id = str(payload["thread_id"])
@@ -498,7 +672,7 @@ def create_app(db=None, settings=None, token=None):
                 raise HTTPException(404)
             command.task_id = out.task_id
             command.action = "approve_" + out.data["approval"]
-            for name in ("version", "hash", "head_sha", "base_sha"):
+            for name in ("version", "hash", "head_sha", "base_sha", "confirmation_id"):
                 if name in out.data:
                     setattr(command, name, out.data[name])
         return globals_command(command)
@@ -508,7 +682,7 @@ def create_app(db=None, settings=None, token=None):
     @app.get("/threads", dependencies=[Depends(authenticate)])
     def threads():
         with db.transaction() as s:
-            return [
+            legacy = [
                 {"task_id": t.id, "thread_id": t.thread_id, "state": t.state}
                 for t in s.scalars(
                     select(Task).where(
@@ -516,6 +690,20 @@ def create_app(db=None, settings=None, token=None):
                     )
                 )
             ]
+            topics = [
+                {
+                    "task_id": topic.task_id,
+                    "thread_id": topic.thread_id,
+                    "state": "TopicOpen",
+                    "topic_id": topic.topic_id,
+                }
+                for topic in s.scalars(
+                    select(TopicThread).where(
+                        TopicThread.thread_id.is_not(None), TopicThread.status == "open"
+                    )
+                )
+            ]
+            return legacy + topics
 
     @app.get("/metrics", dependencies=[Depends(authenticate)])
     def metrics():

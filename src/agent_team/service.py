@@ -2,13 +2,32 @@ import time
 
 from sqlalchemy import select
 
-from .db import Approval, Event, Job, Outbox, Spec, Task, task_lock, uid
+from .db import (
+    Approval,
+    ApprovalGrant,
+    Event,
+    Job,
+    Operation,
+    Outbox,
+    RepositoryLease,
+    Spec,
+    Task,
+    task_lock,
+    uid,
+)
 from .policy import GuardError
+from .workflow import WorkflowV2Service
 
 STOPPED = {"Paused", "Blocked", "Cancelled", "Merged"}
 
 
 def notify(s, task, body, role="upstream", **extra):
+    if task.workflow_version == 2 and task.data.get("project_channel_id"):
+        extra = {
+            "project_status": True,
+            "channel_id": task.data["project_channel_id"],
+            **extra,
+        }
     s.add(Outbox(task_id=task.id, data={"thread_id": task.thread_id, "role": role, "body": body, **extra}))
 
 
@@ -48,13 +67,17 @@ def invalidate(s, task):
 class TaskService:
     def __init__(self, db, settings):
         self.db, self.settings = db, settings
+        self.v2 = WorkflowV2Service(db, settings)
 
     def authorize(self, actor, guild, channel, task=None, bot=False):
         if bot or actor not in self.settings.owner_ids or guild != self.settings.guild_id:
             raise GuardError("Unauthorized actor or guild")
         allowed = {self.settings.channel_id}
+        allowed.update(self.settings.workflow_v2.project_channels.values())
         if task and task.thread_id:
             allowed.add(task.thread_id)
+        if task:
+            allowed.update(task.data.get("topic_thread_ids", []))
         if channel not in allowed:
             raise GuardError("Unauthorized channel/thread")
 
@@ -73,6 +96,7 @@ class TaskService:
         hash="",
         head_sha="",
         base_sha="",
+        confirmation_id="",
         bot=False,
     ):
         with self.db.transaction() as s:
@@ -90,15 +114,79 @@ class TaskService:
                 repository = (
                     f"{owner}/{prefix}-{task_id.lower()}" if configured.per_task else configured.repository
                 )
-                task = Task(
-                    id=task_id, repo=repo, data={"summary": text, "answers": [], "repository": repository}
-                )
-                s.add(task)
-                s.flush()
-                notify(s, task, "案件を受け付けました。要件を整理します。", create_thread=True)
-                enqueue(s, task, "clarify")
+                if self.v2.selected(repo):
+                    task = self.v2.create_task(
+                        s,
+                        task_id=task_id,
+                        repo=repo,
+                        repository=repository,
+                        summary=text,
+                    )
+                else:
+                    task = Task(
+                        id=task_id,
+                        repo=repo,
+                        data={"summary": text, "answers": [], "repository": repository},
+                    )
+                    s.add(task)
+                    s.flush()
+                    notify(s, task, "案件を受け付けました。要件を整理します。", create_thread=True)
+                    enqueue(s, task, "clarify")
             elif task is None:
                 raise GuardError("Task is required")
+            elif task.workflow_version == 2 and action == "approve_requirements":
+                self.v2.approve_requirements_in_session(
+                    s,
+                    task,
+                    actor=actor,
+                    target_hash=hash,
+                    confirmation_id=confirmation_id,
+                )
+            elif task.workflow_version == 2 and action == "approve_plan":
+                self.v2.approve_plan_in_session(
+                    s,
+                    task,
+                    actor=actor,
+                    target_hash=hash,
+                    target_sha=base_sha,
+                    confirmation_id=confirmation_id,
+                )
+            elif task.workflow_version == 2 and action in {"answer", "revise"}:
+                if task.state in {"Cancelled", "Merged", "Merging"}:
+                    raise GuardError("Cannot revise this task")
+                if not text.strip():
+                    raise GuardError("Answer cannot be empty")
+                invalidate(s, task)
+                task.data = {
+                    **task.data,
+                    "answers": task.data.get("answers", []) + [text],
+                    "requirements_approval_id": "",
+                    "plan_approval_id": "",
+                }
+                transition(s, task, "DraftingRequirements")
+                s.add(
+                    Job(
+                        task_id=task.id,
+                        role="cto",
+                        kind="draft_requirements",
+                        data={
+                            "workflow_version": 2,
+                            "requirements_hash": task.data.get("requirements_hash", ""),
+                            "plan_version": 0,
+                            "plan_hash": "",
+                            "base_sha": task.data.get("base_sha", ""),
+                        },
+                    )
+                )
+            elif task.workflow_version == 2 and action == "resume" and task.state == "Cancelled":
+                raise GuardError("Cancelled v2 work must restart as a new task")
+            elif task.workflow_version == 2 and action == "restart":
+                previous = task
+                task = self.v2.restart_cancelled(
+                    s,
+                    previous,
+                    task_id="TASK-" + uid()[:12],
+                )
             elif action == "status":
                 pass
             elif action in {"answer", "revise"}:
@@ -135,12 +223,14 @@ class TaskService:
                 transition(s, task, "Queued")
                 enqueue(s, task, "implement")
             elif action == "approve_merge":
+                authority_key = "requirements_hash" if task.workflow_version == 2 else "spec_hash"
                 if task.state != "AwaitingMergeApproval" or (head_sha, base_sha, hash) != tuple(
-                    task.data.get(k) for k in ("head_sha", "base_sha", "spec_hash")
+                    task.data.get(k) for k in ("head_sha", "base_sha", authority_key)
                 ):
                     raise GuardError("Stale merge approval")
                 approval = {
-                    "commits": [head_sha, base_sha, hash],
+                    "commits": [head_sha, base_sha, hash]
+                    + ([task.data.get("plan_hash", "")] if task.workflow_version == 2 else []),
                     "actor": actor,
                     "expires": time.time() + self.settings.approval_seconds,
                 }
@@ -158,6 +248,36 @@ class TaskService:
                     if old not in STOPPED
                     else task.data.get("resume_state", "Clarifying"),
                 }
+                if task.workflow_version == 2 and action == "cancel":
+                    for approval in s.scalars(
+                        select(ApprovalGrant).where(ApprovalGrant.task_id == task.id)
+                    ):
+                        approval.expires = time.time()
+                    for outbox in s.scalars(
+                        select(Outbox).where(Outbox.task_id == task.id, Outbox.sent.is_(False))
+                    ):
+                        outbox.sent = True
+                        outbox.data = {**outbox.data, "cancelled": True}
+                    job_ids = list(s.scalars(select(Job.id).where(Job.task_id == task.id)))
+                    if job_ids:
+                        for lease in s.scalars(
+                            select(RepositoryLease).where(RepositoryLease.job_id.in_(job_ids))
+                        ):
+                            s.delete(lease)
+                    issue_number = task.data.get("requirements_issue")
+                    if issue_number:
+                        s.add(
+                            Operation(
+                                task_id=task.id,
+                                key=f"issue-close:{task.id}",
+                                status="pending",
+                                data={
+                                    "repository": task.data["repository"],
+                                    "issue_number": issue_number,
+                                    "attempts": 0,
+                                },
+                            )
+                        )
                 transition(s, task, "Paused" if action == "pause" else "Cancelled", text or action)
             elif action in {"resume", "retry"}:
                 expected = "Paused" if action == "resume" else "Blocked"
@@ -213,6 +333,7 @@ class TaskService:
             "thread_id": task.thread_id,
             "state": task.state,
             "version": task.spec_version,
+            "workflow_version": task.workflow_version,
             "data": task.data,
         }
 

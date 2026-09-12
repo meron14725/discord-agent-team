@@ -34,8 +34,134 @@ message_content: false # /answer works without privileged Message Content Intent
 natural_language_requests: false # true: allowed owners' new general messages become requests.
 coordination_timeout: 300
 specialist_concurrency: 1
-specialist_retry_attempts: 1
+specialist_retry_attempts: 3
 specialist_urls: {}
+role_registry:
+  entries:
+    - id: coordinator
+      display_name: 統括・PM
+      responsibilities: [受付、担当選択、重複排除、優先順位、進行管理]
+      capabilities: [coordination, task_routing]
+      tools: [conversation_context]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, approve_on_behalf_of_owner]
+      input_schema: CoordinationRequest
+      output_schema: CoordinationDecision
+      consultable_roles: [cto, backend_integrator, security_sre, frontend_ux, qa, evaluation_manager, analyst]
+      parallel_class: coordinator
+      fallback_role: null
+      discord_bot_key: discord_coordinator_token
+      worker_endpoint: http://coordinator-worker:8090
+      enabled: true
+      aliases: []
+    - id: cto
+      display_name: CTO・要件設計
+      responsibilities: [要件定義、設計、計画レビュー、独立コードレビュー]
+      capabilities: [requirements, architecture, planning, review, test_planning, acceptance_review, evaluation_design, evidence_review, research, analysis]
+      tools: [repository_read, issue_read, plan_read]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, implement_reviewed_changes]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [backend_integrator, security_sre, frontend_ux, qa, evaluation_manager, analyst]
+      parallel_class: read_only
+      fallback_role: null
+      discord_bot_key: discord_upstream_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      aliases: [upstream]
+    - id: backend_integrator
+      display_name: バックエンド・実装統合
+      responsibilities: [実装、デバッグ、テスト、変更統合]
+      capabilities: [implementation, debugging, testing, frontend_implementation, ux_review]
+      tools: [repository_read, patch_proposal, approved_commands]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, change_approved_requirements]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, security_sre, frontend_ux, qa]
+      parallel_class: repository_write
+      fallback_role: null
+      discord_bot_key: discord_downstream_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      aliases: [downstream]
+    - id: security_sre
+      display_name: セキュリティ・SRE
+      responsibilities: [セキュリティ、実行基盤、監視、障害対応、安全な運用]
+      capabilities: [security_review, operations, privileged_change_plan]
+      tools: [platform_snapshot, audit_read, typed_change_plan]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, self_approve_privileged_change]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, backend_integrator]
+      parallel_class: privileged
+      fallback_role: null
+      discord_bot_key: discord_sre_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      aliases: [sre]
+    - id: frontend_ux
+      display_name: フロントエンド・UX
+      responsibilities: [画面実装、操作導線、アクセシビリティ]
+      capabilities: [frontend_implementation, ux_review]
+      tools: [repository_read, patch_proposal, approved_commands]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, change_approved_requirements]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, backend_integrator, qa]
+      parallel_class: repository_write
+      fallback_role: backend_integrator
+      discord_bot_key: discord_frontend_ux_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true # Internal advisor/worker is available without a Discord identity.
+      discord_enabled: false # Enable only after installing the optional Bot and saving its token.
+      aliases: []
+    - id: qa
+      display_name: QA
+      responsibilities: [テスト設計、受け入れ条件の検証、回帰リスクの確認]
+      capabilities: [test_planning, acceptance_review]
+      tools: [repository_read, test_evidence_read]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, edit_implementation]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, backend_integrator, frontend_ux]
+      parallel_class: read_only
+      fallback_role: cto
+      discord_bot_key: discord_qa_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      discord_enabled: false
+      aliases: []
+    - id: evaluation_manager
+      display_name: 評価管理
+      responsibilities: [評価基準、証拠品質、AI成果の再現性の確認]
+      capabilities: [evaluation_design, evidence_review]
+      tools: [repository_read, test_evidence_read, artifact_read]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, edit_implementation]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, qa, analyst]
+      parallel_class: read_only
+      fallback_role: cto
+      discord_bot_key: discord_evaluation_manager_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      discord_enabled: false
+      aliases: []
+    - id: analyst
+      display_name: 調査・分析
+      responsibilities: [調査、比較、前提と根拠の整理]
+      capabilities: [research, analysis]
+      tools: [approved_sources, artifact_read]
+      forbidden_actions: [read_or_share_secrets, bypass_owner_approval, publish_or_merge_directly, edit_implementation]
+      input_schema: SpecialistRequest
+      output_schema: SpecialistDecision
+      consultable_roles: [cto, evaluation_manager]
+      parallel_class: read_only
+      fallback_role: cto
+      discord_bot_key: discord_analyst_token
+      worker_endpoint: http://specialist-worker:8090
+      enabled: true
+      discord_enabled: false
+      aliases: []
 discord_sre:
   enabled: false
   managed_category_ids: [] # Human-created project/testing categories only.
@@ -44,3 +170,21 @@ discord_sre:
   audit_channel_id: ''
   require_approval: true
   approval_seconds: 900
+workflow_v2:
+  enabled: false # 検証リポジトリでAC-01〜AC-17を満たした後にだけ有効化する。
+  repository_aliases: []
+  requirements_approver_ids: []
+  plan_approver_ids: []
+  project_channels: {} # リポジトリ別チャンネル: {demo: '123456789012345678'}
+  github_issue_conditional_updates: false # 専用Issueで古いETagが412になることを確認後だけtrue。
+  normal_concurrency: 4
+  privileged_concurrency: 1
+  model_calls_per_task: 30
+  consultations_per_task: 15
+  consultations_per_topic: 5
+  plan_revision_limit: 3
+  implementation_revision_limit: 3
+  heartbeat_seconds: 120
+  stalled_seconds: 600
+  renderer_url: http://renderer:8091
+  worker_url: http://v2-worker:8090

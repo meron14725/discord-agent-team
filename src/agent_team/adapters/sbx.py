@@ -116,13 +116,41 @@ class SbxRunner:
     async def run(self, request: RunRequest):
         if request.auth_mode != "chatgpt":
             raise GuardError("Sandboxes runner requires ChatGPT OAuth; no fallback")
+        if self.commands.scanner.scan_text(request.prompt).blocked or any(
+            self.commands.scanner.scan_text(content).blocked
+            for content in request.files.values()
+        ):
+            raise GuardError("Potential secret blocked at sandbox input boundary")
         expected_roles = {
             "coordinate": {"coordinator"},
-            "respond": {"upstream", "downstream", "sre"},
+            "respond": {
+                "upstream",
+                "downstream",
+                "sre",
+                "cto",
+                "backend_integrator",
+                "security_sre",
+                "frontend_ux",
+                "qa",
+                "evaluation_manager",
+                "analyst",
+            },
             "clarify": {"upstream"},
-            "implement": {"downstream"},
-            "fix": {"downstream"},
-            "review": {"upstream"},
+            "draft_requirements": {"cto"},
+            "consult": {
+                "cto",
+                "backend_integrator",
+                "security_sre",
+                "frontend_ux",
+                "qa",
+                "evaluation_manager",
+                "analyst",
+            },
+            "plan": {"backend_integrator"},
+            "review_plan": {"cto"},
+            "implement": {"downstream", "backend_integrator"},
+            "fix": {"downstream", "backend_integrator"},
+            "review": {"upstream", "cto"},
         }[request.kind]
         if request.role not in expected_roles:
             raise GuardError("Wrong worker role")
@@ -168,8 +196,17 @@ class SbxRunner:
             "4g",
             "codex",
         ]
-        readonly = request.kind == "respond" or request.role in {"coordinator", "upstream"}
-        source = str(snapshot) if readonly else "/home/agent/workspace/source"
+        brokered_write = request.kind in {"implement", "fix"} and request.role == (
+            "backend_integrator"
+        )
+        readonly = (
+            brokered_write
+            or request.kind == "consult"
+            or request.kind == "respond"
+            or request.role in {"coordinator", "upstream", "cto"}
+        )
+        model_source = str(snapshot) if readonly else "/home/agent/workspace/source"
+        output_source = "/home/agent/workspace/output" if brokered_write else model_source
         if readonly:
             # sbx requires its primary host mount to be writable. Share an empty,
             # disposable scratch directory and a separate readonly source snapshot.
@@ -225,14 +262,17 @@ except OSError as e:
 else:
     raise RuntimeError('Upstream mount is writable')
 """
-            await self.command(job_id, ["exec", "--user", "root", name, "python3", "-c", probe, source])
+            await self.command(
+                job_id,
+                ["exec", "--user", "root", name, "python3", "-c", probe, model_source],
+            )
         await self.command(
             job_id,
             ["exec", "-i", name, "python3", "-c", BOOTSTRAP],
             stdin=json.dumps(
                 {
-                    "source": source,
-                    "files": {} if readonly else request.files,
+                    "source": output_source,
+                    "files": request.files if brokered_write or not readonly else {},
                     "schema": Result.model_json_schema(),
                 }
             ),
@@ -251,7 +291,7 @@ else:
             "exec",
             "-i",
             "-w",
-            source,
+            model_source,
             name,
             "codex",
             "exec",
@@ -281,6 +321,43 @@ else:
         if request.model:
             args.extend(["--model", request.model])
         output = await self.command(job_id, [*args, "-"], request.timeout, prompt)
+        if self.commands.scanner.scan_text(output).blocked:
+            raise GuardError("Potential secret blocked at sandbox model output boundary")
+        if brokered_write:
+            result_text = await self.command(
+                job_id, ["exec", name, "cat", "/tmp/team-result.json"]
+            )
+            if self.commands.scanner.scan_text(result_text).blocked:
+                raise GuardError("Potential secret blocked at sandbox result boundary")
+            result = Result.model_validate_json(result_text)
+            requested_paths = {path for item in result.workspace_reads for path in item.paths}
+            if requested_paths - set(request.files):
+                raise GuardError("Workspace read request is outside the supplied snapshot")
+            allowlisted = {tuple(command) for command in request.test_commands}
+            if any(tuple(item.argv) not in allowlisted for item in result.commands):
+                raise GuardError("Command request is outside the configured argv allowlist")
+            if not result.patches:
+                raise GuardError("Brokered implementation returned no patch proposal")
+            for proposal in result.patches:
+                self.commands.patch_paths(proposal.patch)
+                patch_output = await self.command(
+                    job_id,
+                    [
+                        "exec",
+                        "-i",
+                        "-w",
+                        output_source,
+                        name,
+                        "patch",
+                        "--batch",
+                        "--forward",
+                        "-p1",
+                    ],
+                    request.timeout,
+                    proposal.patch,
+                )
+                if self.commands.scanner.scan_text(patch_output).blocked:
+                    raise GuardError("Potential secret blocked at sandbox patch boundary")
         tests = []
         for command in request.test_commands:
             if not command:
@@ -288,10 +365,20 @@ else:
             # Repository tests are untrusted code; execute only inside this VM.
             env = {k: os.environ[k] for k in ("HOME", "PATH", "TMPDIR", "LANG") if k in os.environ}
             code, log = await self.commands.process(
-                job_id, ["sbx", "exec", "-w", source, name, *command], self.workspace, env, request.timeout
+                job_id,
+                ["sbx", "exec", "-w", output_source, name, *command],
+                self.workspace,
+                env,
+                request.timeout,
             )
+            if self.commands.scanner.scan_text(log).blocked:
+                raise GuardError("Potential secret blocked at sandbox command boundary")
             tests.append(TestEvidence(command=command, exit_code=code, output=log[-10000:]))
-        payload = json.loads(await self.command(job_id, ["exec", name, "python3", "-c", COLLECT, source]))
+        payload = json.loads(
+            await self.command(
+                job_id, ["exec", name, "python3", "-c", COLLECT, output_source]
+            )
+        )
         result = Result.model_validate(payload["result"])
         for field in IDENTITY:
             if getattr(result, field) != getattr(request, field):
@@ -303,7 +390,7 @@ else:
             safe_path(path)
         changed = {p: v for p, v in final.items() if request.files.get(p) != v}
         changed.update({p: None for p in request.files if p not in final})
-        if readonly and changed:
+        if readonly and not brokered_write and changed:
             raise GuardError("Read-only role modified source")
         if (request.kind == "coordinate") != (result.coordination is not None):
             raise GuardError("Unexpected coordination payload")

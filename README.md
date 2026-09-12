@@ -50,8 +50,19 @@ docker compose --profile live run --rm --no-deps upstream-worker codex login --d
 docker compose --profile live up -d
 ```
 
+追加4役は内部相談には利用でき、Discord接続だけが既定で無効です。各Discord Appを作成してtokenを`secrets/`へ保存し、
+`role_registry`の対象役を一役ずつ`discord_enabled: true`にしてから、次のoverlayで起動します。
+
+```sh
+docker compose -f compose.yaml -f compose.optional-bots.yaml \
+  -f compose.sbx.yaml --profile live up -d --build
+```
+
+有効な役だけがGatewayへ接続されます。全員宛ての発言では、その時点で有効な全専門役が
+それぞれ応答します。
+
 `/request repo:project summary:作りたいもの` から始めます。サブスク利用枠は全AI役で共有します。
-初期値はモデル同時実行1件、1日30実行、1案件10実行、1実行20分、修正3回。これらはアプリ側の上限で、契約の利用枠を表す数値ではありません。
+v1はサブスク認証時にモデル同時実行1件、v2は通常最大4件・SRE特権1件です。v2は1案件30モデル実行、内部相談15回・同一話題5回、1実行20分、計画／実装修正各3回を上限にします。これらはアプリ側の上限で、契約の利用枠を表す数値ではありません。
 
 実接続の設定例は `merge_mode: disabled` です。CI・独立レビュー・ブランチ保護の実効性を確認してから `human_gate` に変更します。
 `auto_low_risk` のコードもありますが、実アカウントでの自動マージは未検証です。
@@ -86,6 +97,7 @@ uv run agent-team demo
 ```
 
 - [受け入れ条件・検証結果・未対応範囲](docs/acceptance.md)
+- [Issue正本の開発フローv2と段階的な有効化](docs/runbooks/workflow-v2.md)
 - [構成の判断と仕様との差分](docs/adr/0001-mvp.md)
 - [バックアップ・復旧・移行](docs/runbooks/operations.md)
 - [元仕様](docs/discord-agent-team-spec.md)

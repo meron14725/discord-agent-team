@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from .roles import RoleId, RoleRegistry, default_role_registry
+
 
 class Check(BaseModel):
     name: str
@@ -40,6 +42,34 @@ class DiscordSRE(BaseModel):
     approval_seconds: int = Field(default=900, ge=60, le=86400)
 
 
+class WorkflowV2(BaseModel):
+    enabled: bool = False
+    repository_aliases: list[str] = Field(default_factory=list)
+    requirements_approver_ids: list[str] = Field(default_factory=list)
+    plan_approver_ids: list[str] = Field(default_factory=list)
+    project_channels: dict[str, str] = Field(default_factory=dict)
+    github_issue_conditional_updates: bool = False
+    normal_concurrency: int = Field(default=4, ge=1, le=4)
+    privileged_concurrency: int = Field(default=1, ge=1, le=1)
+    model_calls_per_task: int = Field(default=30, ge=1, le=30)
+    consultations_per_task: int = Field(default=15, ge=1, le=15)
+    consultations_per_topic: int = Field(default=5, ge=1, le=5)
+    plan_revision_limit: int = Field(default=3, ge=1, le=3)
+    implementation_revision_limit: int = Field(default=3, ge=1, le=3)
+    heartbeat_seconds: int = Field(default=120, ge=30, le=120)
+    stalled_seconds: int = Field(default=600, ge=300, le=1800)
+    renderer_url: str = "http://renderer:8091"
+    worker_url: str = "http://v2-worker:8090"
+
+    @model_validator(mode="after")
+    def safe_rollout(self):
+        if len(self.repository_aliases) != len(set(self.repository_aliases)):
+            raise ValueError("v2 repository aliases must be unique")
+        if self.enabled and not self.repository_aliases:
+            raise ValueError("v2 requires an explicit repository allowlist")
+        return self
+
+
 class Settings(BaseModel):
     github_reviewer_app: ReviewerApp | None = None
     mode: Literal["mock", "live"] = "mock"
@@ -68,20 +98,39 @@ class Settings(BaseModel):
     message_content: bool = False
     natural_language_requests: bool = False
     coordination_timeout: int = Field(default=300, ge=30, le=600)
-    specialist_concurrency: int = Field(default=1, ge=1, le=3)
-    specialist_retry_attempts: int = Field(default=1, ge=1, le=2)
+    specialist_concurrency: int = Field(default=1, ge=1, le=4)
+    specialist_retry_attempts: int = Field(default=3, ge=1, le=3)
     coordinator_url: str = "http://coordinator-worker:8090"
     specialist_url: str = "http://specialist-worker:8090"
-    specialist_urls: dict[Literal["upstream", "downstream", "sre"], str] = Field(
-        default_factory=dict
-    )
+    role_registry: RoleRegistry = Field(default_factory=default_role_registry)
+    specialist_urls: dict[RoleId, str] = Field(default_factory=dict)
     discord_sre: DiscordSRE = Field(default_factory=DiscordSRE)
+    workflow_v2: WorkflowV2 = Field(default_factory=WorkflowV2)
     upstream_url: str = "http://upstream-worker:8090"
     downstream_url: str = "http://downstream-worker:8090"
 
     @model_validator(mode="after")
     def live_ready(self):
+        for role in self.specialist_urls:
+            self.role_registry.resolve(role)
         if self.mode == "live":
+            unknown_v2 = set(self.workflow_v2.repository_aliases) - set(self.repos)
+            unknown_channels = set(self.workflow_v2.project_channels) - set(self.repos)
+            if unknown_v2:
+                raise ValueError(f"Unknown v2 repository aliases: {sorted(unknown_v2)}")
+            if unknown_channels:
+                raise ValueError(f"Unknown project channel aliases: {sorted(unknown_channels)}")
+            if self.workflow_v2.enabled:
+                approvers = {
+                    *self.workflow_v2.requirements_approver_ids,
+                    *self.workflow_v2.plan_approver_ids,
+                }
+                if not approvers or not all(value.isdigit() for value in approvers):
+                    raise ValueError("v2 requires explicit Discord approval allowlists")
+                if not approvers.issubset(self.owner_ids):
+                    raise ValueError("v2 approvers must also be allowed owners")
+                if not all(value.isdigit() for value in self.workflow_v2.project_channels.values()):
+                    raise ValueError("v2 project channel IDs must be Discord snowflakes")
             if self.auth_mode == "api_key" and (
                 not self.model
                 or min(self.daily_budget_usd, self.task_budget_usd, self.run_reservation_usd) <= 0
@@ -122,7 +171,33 @@ class Settings(BaseModel):
         )
 
     def specialist_endpoint(self, role: str) -> str:
-        return self.specialist_urls.get(role, self.specialist_url)
+        canonical = self.role_registry.resolve(role)
+        definition = self.role_registry.role(canonical)
+        alias_endpoint = next(
+            (
+                self.specialist_urls[alias]
+                for alias in definition.aliases
+                if alias in self.specialist_urls
+            ),
+            "",
+        )
+        return self.specialist_urls.get(
+            role,
+            self.specialist_urls.get(
+                canonical,
+                alias_endpoint or definition.worker_endpoint or self.specialist_url,
+            ),
+        )
+
+    def role_enabled(self, role: str) -> bool:
+        return self.role_registry.role(role).enabled
+
+    def discord_role_enabled(self, role: str) -> bool:
+        definition = self.role_registry.role(role)
+        return definition.enabled and definition.discord_enabled
+
+    def discord_bot_key(self, role: str) -> str:
+        return self.role_registry.role(role).discord_bot_key
 
 
 def load_settings() -> Settings:
@@ -133,6 +208,8 @@ def load_settings() -> Settings:
             values[field] = value
     if value := os.environ.get("TEAM_SPECIALIST_URLS"):
         values["specialist_urls"] = json.loads(value)
+    if value := os.environ.get("TEAM_WORKFLOW_V2_WORKER_URL"):
+        values.setdefault("workflow_v2", {})["worker_url"] = value
     return Settings.model_validate(values)
 
 

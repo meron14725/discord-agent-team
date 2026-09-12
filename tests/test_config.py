@@ -1,8 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from agent_team.api import explicitly_addresses_all, requests_discord_change
+from agent_team.api import enforce_explicit_audience, explicitly_addresses_all, requests_discord_change
 from agent_team.config import Check, Repo, Settings
+from agent_team.contracts import CoordinationDecision
 
 
 def live_settings(**overrides):
@@ -37,13 +38,16 @@ def test_specialist_role_endpoints_can_be_split():
             "sre": "http://sre:8093",
         },
         specialist_concurrency=3,
-        specialist_retry_attempts=2,
+        specialist_retry_attempts=3,
     )
     assert settings.specialist_endpoint("upstream") == "http://upstream:8092"
+    assert settings.specialist_endpoint("cto") == "http://upstream:8092"
     assert settings.specialist_endpoint("downstream") == "http://downstream:8094"
+    assert settings.specialist_endpoint("backend_integrator") == "http://downstream:8094"
     assert settings.specialist_endpoint("sre") == "http://sre:8093"
+    assert settings.specialist_endpoint("security_sre") == "http://sre:8093"
     assert settings.specialist_concurrency == 3
-    assert settings.specialist_retry_attempts == 2
+    assert settings.specialist_retry_attempts == 3
 
 
 def test_explicit_team_audience_is_detected_without_matching_definition_questions():
@@ -52,6 +56,21 @@ def test_explicit_team_audience_is_detected_without_matching_definition_question
     assert explicitly_addresses_all("他のメンバーにもこんにちはって言わせて")
     assert not explicitly_addresses_all("みんなとはどういう意味？")
     assert not explicitly_addresses_all("挨拶して")
+
+
+def test_explicit_team_audience_can_expand_beyond_normal_four_role_limit():
+    decision = CoordinationDecision(
+        action="reply",
+        reply="全員へ依頼します。",
+        task_summary="",
+        delegations=[],
+    )
+    expanded = enforce_explicit_audience(
+        decision,
+        "みんな自己紹介して",
+        ("cto", "backend_integrator", "security_sre", "frontend_ux", "qa", "evaluation_manager", "analyst"),
+    )
+    assert len(expanded.delegations) == 7
 
 
 def test_explicit_discord_changes_require_a_typed_plan_without_matching_howto_questions():

@@ -142,9 +142,16 @@ def merge_gate(task, snapshot, repo, settings, now=None):
         raise GuardError("PR is closed, draft, conflicting, or mergeability unknown")
     if snapshot.get("head_sha") != d.get("head_sha") or snapshot.get("base_sha") != d.get("base_sha"):
         raise GuardError("Commit changed; approvals must be invalidated")
-    if d.get("spec_approval") != d.get("spec_hash"):
-        raise GuardError("Specification is unapproved")
-    expected_review = [d["head_sha"], d["base_sha"], d["spec_hash"]]
+    if task.workflow_version == 2:
+        if not d.get("requirements_approval_id") or not d.get("plan_approval_id"):
+            raise GuardError("Requirements or implementation plan is unapproved")
+        expected_review = [d["head_sha"], d["base_sha"], d["requirements_hash"], d["plan_hash"]]
+        authority_hash = d["requirements_hash"]
+    else:
+        if d.get("spec_approval") != d.get("spec_hash"):
+            raise GuardError("Specification is unapproved")
+        expected_review = [d["head_sha"], d["base_sha"], d["spec_hash"]]
+        authority_hash = d["spec_hash"]
     if d.get("review_approval") != expected_review:
         raise GuardError("Current commits have no review approval")
     if not snapshot.get("protection_ok") or not snapshot.get("review_ok"):
@@ -165,8 +172,8 @@ def merge_gate(task, snapshot, repo, settings, now=None):
         ):
             return "waiting_checks"
     files = snapshot.get("files", {})
-    validate_files(files, settings, task.id, d["spec_hash"])
-    if snapshot.get("spec_hash") != d["spec_hash"]:
+    validate_files(files, settings, task.id, authority_hash)
+    if snapshot.get("spec_hash") != authority_hash:
         raise GuardError("PR specification hash mismatch")
     low_risk = all(
         any(fnmatch.fnmatch(p, a) for a in repo.allowed_paths)

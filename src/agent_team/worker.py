@@ -15,19 +15,19 @@ log = logging.getLogger(__name__)
 
 def create_worker(runner=None, token=None, role=None, capacity=None):
     auth_mode = os.environ.get("AUTH_MODE", "chatgpt")
+    token = token or secret("WORKER_TOKEN")
+    if len(token) < 32:
+        raise ValueError("WORKER_TOKEN must contain at least 32 characters")
     runner = runner or (
-        CodexRunner(auth_home="/codex-auth")
+        CodexRunner(auth_home="/codex-auth", scan_salt=token.encode())
         if auth_mode == "chatgpt"
-        else CodexRunner(secret("OPENAI_API_KEY"))
+        else CodexRunner(secret("OPENAI_API_KEY"), scan_salt=token.encode())
     )
     active = {}
     role = role or os.environ["WORKER_ROLE"]
     capacity = capacity or int(os.environ.get("WORKER_CONCURRENCY", "1"))
-    if not 1 <= capacity <= 3:
-        raise ValueError("WORKER_CONCURRENCY must be between 1 and 3")
-    token = token or secret("WORKER_TOKEN")
-    if len(token) < 32:
-        raise ValueError("WORKER_TOKEN must contain at least 32 characters")
+    if not 1 <= capacity <= 4:
+        raise ValueError("WORKER_CONCURRENCY must be between 1 and 4")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -58,11 +58,34 @@ def create_worker(runner=None, token=None, role=None, capacity=None):
             raise HTTPException(403, "Authentication mode mismatch; no fallback allowed")
         expected_roles = {
             "coordinate": {"coordinator"},
-            "respond": {"upstream", "downstream", "sre"},
+            "respond": {
+                "upstream",
+                "downstream",
+                "sre",
+                "cto",
+                "backend_integrator",
+                "security_sre",
+                "frontend_ux",
+                "qa",
+                "evaluation_manager",
+                "analyst",
+            },
             "clarify": {"upstream"},
-            "implement": {"downstream"},
-            "fix": {"downstream"},
-            "review": {"upstream"},
+            "draft_requirements": {"cto"},
+            "consult": {
+                "cto",
+                "backend_integrator",
+                "security_sre",
+                "frontend_ux",
+                "qa",
+                "evaluation_manager",
+                "analyst",
+            },
+            "plan": {"backend_integrator"},
+            "review_plan": {"cto"},
+            "implement": {"downstream", "backend_integrator"},
+            "fix": {"downstream", "backend_integrator"},
+            "review": {"upstream", "cto"},
         }[request.kind]
         allowed_pairs = {
             "task": {
@@ -76,6 +99,32 @@ def create_worker(runner=None, token=None, role=None, capacity=None):
             "conversation-upstream": {("upstream", "respond")},
             "conversation-downstream": {("downstream", "respond")},
             "sre": {("sre", "respond")},
+            "v2": {
+                ("cto", "draft_requirements"),
+                ("cto", "review_plan"),
+                ("backend_integrator", "plan"),
+                ("backend_integrator", "implement"),
+                ("backend_integrator", "fix"),
+                ("cto", "review"),
+                ("cto", "consult"),
+                ("backend_integrator", "consult"),
+                ("security_sre", "consult"),
+                ("frontend_ux", "consult"),
+                ("qa", "consult"),
+                ("evaluation_manager", "consult"),
+                ("analyst", "consult"),
+                ("frontend_ux", "respond"),
+                ("qa", "respond"),
+                ("evaluation_manager", "respond"),
+                ("analyst", "respond"),
+            },
+            "conversation-cto": {("cto", "respond")},
+            "conversation-backend": {("backend_integrator", "respond")},
+            "conversation-sre": {("security_sre", "respond")},
+            "conversation-frontend": {("frontend_ux", "respond")},
+            "conversation-qa": {("qa", "respond")},
+            "conversation-evaluation": {("evaluation_manager", "respond")},
+            "conversation-analyst": {("analyst", "respond")},
         }
         if (
             request.role not in expected_roles

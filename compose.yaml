@@ -34,7 +34,7 @@ services:
       TEAM_CONFIG: /app/config.yaml
     volumes: ['./config.yaml:/app/config.yaml:ro', 'artifacts:/artifacts']
     secrets: [db_password, internal_token, worker_token, github_publisher_token, github_reviewer_token, github_merger_token]
-    networks: [database, gateway, upstream, downstream, outbound]
+    networks: [database, gateway, upstream, downstream, renderer, outbound]
     depends_on:
       postgres: {condition: service_healthy}
     healthcheck:
@@ -44,6 +44,20 @@ services:
       retries: 12
     mem_limit: 1g
     cpus: 1
+
+  renderer:
+    <<: *hardening
+    profiles: [live]
+    image: discord-agent-team:0.1.0
+    command: [agent-team, renderer]
+    networks: [renderer]
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8091/health")']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 512m
+    cpus: 0.5
 
   discord-gateway:
     <<: *hardening
@@ -104,6 +118,7 @@ networks:
   gateway: {internal: true}
   upstream: {internal: true}
   downstream: {internal: true}
+  renderer: {internal: true}
   outbound: {}
   upstream-outbound: {}
   downstream-outbound: {}

@@ -802,6 +802,10 @@ async def serve():
                                     owner = discord.Object(id=int(approvers[0]))
                                     mention = f"<@{owner.id}> "
                                     owner_mentions = discord.AllowedMentions(users=[owner])
+                            elif item.get("mention_owner") and settings.owner_ids:
+                                owner = discord.Object(id=int(settings.owner_ids[0]))
+                                mention = f"<@{owner.id}> "
+                                owner_mentions = discord.AllowedMentions(users=[owner])
                             body = (
                                 f"{mention}**{item['task_id']}**\n{item['body'][:1500]}\n{marker}"
                             )
@@ -813,7 +817,12 @@ async def serve():
                                 for attachment in item.get("attachments", [])
                             ]
                             existing = None
-                            if item.get("status_message_id"):
+                            # Discord does not notify users when a mention is added by editing
+                            # an existing message. Owner-attention notices therefore need a
+                            # fresh message instead of reusing the project status message.
+                            if item.get("status_message_id") and not (
+                                item.get("approval") or item.get("mention_owner")
+                            ):
                                 try:
                                     existing = await channel.fetch_message(
                                         int(item["status_message_id"])

@@ -38,6 +38,7 @@ WORKERS = (
     ("v2", ROOT / "scripts/run_sbx_v2_worker.sh", 8095, "v2", 4),
 )
 STARTUP_GRACE_SECONDS = 15
+WORKER_START_INTERVAL_SECONDS = 1
 CHECK_INTERVAL_SECONDS = 10
 MAX_CONSECUTIVE_FAILURES = 3
 
@@ -102,6 +103,9 @@ def main() -> int:
         for name, script, _port, _role, _capacity in WORKERS:
             processes[name] = subprocess.Popen(["/bin/sh", str(script)], cwd=ROOT)
             log(f"started {name} worker pid={processes[name].pid}")
+            # macOS can return EDEADLK when several Python processes import the
+            # same environment from a synced filesystem at exactly the same time.
+            time.sleep(WORKER_START_INTERVAL_SECONDS)
 
         deadline = time.monotonic() + STARTUP_GRACE_SECONDS
         while not stopping and time.monotonic() < deadline:

@@ -235,6 +235,7 @@ class WorkflowV2Service:
                 "requirements_issue",
                 "requirements_url",
                 "issue",
+                "provisioned",
             )
             if previous.data.get(key)
         }

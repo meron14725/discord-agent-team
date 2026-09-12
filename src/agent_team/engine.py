@@ -365,7 +365,22 @@ class Engine:
     def prepare_v2(self, job_id, fence, task, job):
         repo = self.settings.repo_for(task)
         kind, role = job.kind, job.role
-        base = task.data.get("base_sha") or self.github.base(repo)
+        provisioned_now = repo.per_task and not task.data.get("provisioned")
+        if provisioned_now:
+            self.external(
+                job_id,
+                fence,
+                "repository",
+                task.id,
+                lambda current, key: self.github.ensure_repo(repo, current),
+            )
+            with self.db.transaction() as session:
+                current, _ = self.current(session, job_id, fence)
+                current.data = {**current.data, "provisioned": True}
+                task = current
+        base = task.data.get("base_sha") or self.github.base(
+            repo, attempts=6 if provisioned_now else 1
+        )
         with self.db.transaction() as session:
             current, _ = self.current(session, job_id, fence)
             current.data = {**current.data, "base_sha": base}
@@ -1041,7 +1056,7 @@ class Engine:
             return
         raise GuardError(f"Unknown v2 execution kind: {kind}")
 
-    def fail(self, job_id, fence, error):
+    def fail(self, job_id, fence, error, phase="run"):
         with self.db.transaction() as s:
             try:
                 task, job = self.current(s, job_id, fence)
@@ -1049,12 +1064,16 @@ class Engine:
                 return
             self.release_repository_lease(s, job)
             if task.workflow_version == 2 and not isinstance(error, GuardError):
+                failure_target = {
+                    "prepare": "GitHub準備処理",
+                    "finish": "成果物の検証・保存処理",
+                }.get(phase, f"{job.role}への接続・実行")
                 if job.attempt < 3:
                     job.status = "queued"
                     notify(
                         s,
                         task,
-                        f"{job.role}への接続に失敗しました。{job.attempt + 1}回目を再試行します。",
+                        f"{failure_target}に失敗しました。{job.attempt + 1}回目を再試行します。",
                         role="coordinator",
                     )
                     return
@@ -1082,12 +1101,21 @@ class Engine:
             reason = (
                 str(error)[:500]
                 if isinstance(error, GuardError)
-                else type(error).__name__ + ": 接続・実行失敗。監査を確認して /retry"
+                else type(error).__name__
+                + f": {failure_target if task.workflow_version == 2 else '接続・実行'}失敗。"
+                "監査を確認して /retry"
             )
+            if task.workflow_version == 2:
+                task.data = {
+                    **task.data,
+                    "retry_state": task.state,
+                    "failed_phase": phase,
+                }
             transition(s, task, "Blocked", reason)
 
     async def execute(self, job_id, fence):
         execution = None
+        phase = "prepare"
         try:
             with self.db.transaction() as s:
                 _, job = self.current(s, job_id, fence)
@@ -1098,6 +1126,7 @@ class Engine:
                 if saved
                 else await asyncio.to_thread(self.prepare, job_id, fence)
             )
+            phase = "run"
             execution = asyncio.create_task(self.runner.run(request)) if not saved else None
             if execution:
                 while not execution.done():
@@ -1106,12 +1135,13 @@ class Engine:
                 response = execution.result()
             else:
                 response = RunResponse.model_validate(saved)
+            phase = "finish"
             await asyncio.to_thread(self.finish, job_id, fence, request, response)
         except Exception as error:
             if execution and not execution.done():
                 execution.cancel()
                 await self.runner.cancel(job_id)
-            await asyncio.to_thread(self.fail, job_id, fence, error)
+            await asyncio.to_thread(self.fail, job_id, fence, error, phase)
 
     async def cancel_task(self, task_id):
         with self.db.transaction() as session:

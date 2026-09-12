@@ -196,6 +196,30 @@ def test_task_service_routes_allowlisted_new_request_to_v2(team):
     assert service.status(created["id"])["workflow_version"] == 2
 
 
+def test_v2_per_task_repository_is_provisioned_before_base_and_issue(team, monkeypatch):
+    settings, _, github, service, engine, command = team
+    settings.repos["demo"].per_task = True
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    settings.workflow_v2.requirements_approver_ids = ["demo-owner"]
+    settings.workflow_v2.github_issue_conditional_updates = True
+
+    task = command("request", repo="demo", text="案件repoでIssue正本を作る")
+    original_base = github.base
+
+    def base_after_provisioning(repo, attempts=1):
+        assert github.read("repository:" + task["id"])["repository"] == repo.repository
+        return original_base(repo, attempts)
+
+    monkeypatch.setattr(github, "base", base_after_provisioning)
+    step(engine)
+
+    prepared = service.status(task["id"])
+    assert prepared["state"] == "AwaitingRequirementsConfirmation"
+    assert prepared["data"]["provisioned"] is True
+    assert prepared["data"]["requirements_issue"] > 0
+
+
 def test_cancel_closes_issue_and_restart_creates_new_task_with_fresh_approval(team):
     settings, db, github, service, engine, command = team
     settings.workflow_v2.enabled = True
@@ -506,6 +530,36 @@ def test_v2_connection_failure_retries_three_times_then_uses_safe_fallback(team)
         assert jobs[1].role == "cto"
         assert jobs[1].data["fallback_from"] == "analyst"
         assert session.get(Task, "TASK-FALLBACK").state != "Blocked"
+
+
+def test_v2_retry_requeues_failed_requirements_job(team):
+    settings, db, _, service, engine, command = team
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    with db.transaction() as session:
+        service.v2.create_task(
+            session,
+            task_id="TASK-RETRY-V2",
+            repo="demo",
+            repository="example/demo",
+            summary="retry",
+        )
+
+    for _ in range(3):
+        claim = engine.claim()
+        assert claim is not None
+        engine.fail(*claim, RuntimeError("GitHub unavailable"), phase="prepare")
+
+    blocked = service.status("TASK-RETRY-V2")
+    assert blocked["state"] == "Blocked"
+    assert blocked["data"]["retry_state"] == "DraftingRequirements"
+    assert "GitHub準備処理失敗" in blocked["data"]["reason"]
+
+    retried = command("retry", task_id="TASK-RETRY-V2")
+    assert retried["state"] == "DraftingRequirements"
+    with db.transaction() as session:
+        job = session.scalar(select(Job).where(Job.task_id == "TASK-RETRY-V2"))
+        assert (job.status, job.attempt, job.owner, job.lease) == ("queued", 0, "", 0)
 
 
 def test_v2_stalled_job_retries_once_then_blocks_and_notifies_sre(team):

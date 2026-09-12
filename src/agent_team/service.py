@@ -312,6 +312,30 @@ class TaskService:
                     )
                 if task.state == "DraftingRequirements":
                     pass
+                elif task.workflow_version == 2 and action == "retry" and recoverable:
+                    retry_states = {
+                        "draft_requirements": "DraftingRequirements",
+                        "plan": "PlanningImplementation",
+                        "review_plan": "ReviewingImplementationPlan",
+                        "implement": "Queued",
+                        "fix": "Fixing",
+                        "review": "Reviewing",
+                    }
+                    target_state = task.data.get("retry_state") or retry_states.get(
+                        recoverable.kind
+                    )
+                    if target_state is None:
+                        raise GuardError("Failed v2 job cannot be retried from its saved state")
+                    recoverable.status = "queued"
+                    recoverable.attempt = 0
+                    recoverable.owner = ""
+                    recoverable.lease = 0
+                    task.data = {
+                        key: value
+                        for key, value in task.data.items()
+                        if key not in {"retry_state", "failed_phase"}
+                    }
+                    transition(s, task, target_state, f"失敗した{recoverable.kind}を再試行")
                 elif (
                     action == "retry"
                     and recoverable

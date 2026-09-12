@@ -4,7 +4,7 @@
 
 ## 実行結果
 
-- Pythonテスト: 165件成功。既存v1に加え、Issue正本、安全な要件変更案の反映・再照合、要件・計画の別承認、DB migration、役割台帳、内部相談、型付き引き継ぎ、説明renderer、秘密情報遮断、案件作業空間、並列上限、repository lease、中止・再実行、30秒開始監視、10分滞留復旧、24時間確認通知、安全な担当fallback、Draft PRからSquash mergeまでを検証。
+- Pythonテスト: 166件成功。既存v1に加え、Issue正本、安全な要件変更案の反映・再照合、要件・計画の別承認、DB migration、役割台帳、内部相談、型付き引き継ぎ、説明renderer、秘密情報遮断、案件作業空間、並列上限、repository lease、中止・再実行、30秒開始監視、10分滞留復旧、24時間確認通知、安全な担当fallback、Codex厳格schema、Draft PRからSquash mergeまでを検証。
 - Ruff: 成功。テスト依存のStarlette/AnyIOに非推奨警告2件あり。
 - Compose設定検査: 成功。
 - 制御／ワーカーイメージのarm64ビルド: 成功。
@@ -13,6 +13,7 @@
 - 分離したPostgreSQL DBで同じ模擬フロー: 成功。
 - PostgreSQLで第2制御プロセスのリーダーロック取得を拒否: 成功。
 - ワーカー内 `codex --version`: `codex-cli 0.154.0`。
+- **移行後の実モデル疎通:** 統括workerとv2専用workerからChatGPT OAuth経由で実行し、どちらもHTTP 200とschema適合結果を確認。
 - **実sandbox:** 旧Compose内方式はbubblewrapとLandlockの制約で不採用。Docker Sandboxesをホストランチャーから使用し、実モデル、ジョブ、停止、役別workerを検証済み。[旧方式の詳細](adr/0002-sandbox.md)。
 - **実Discord:** 統括、上流、下流、情シス・SREの4 Botを接続。専門役の並列会話と、SREによる変更提案→owner承認→チャンネル作成→after確認を実証。v2では通常最大4、SRE特権1へ制御を拡張したが実負荷試験は未実施。
 - **専門家間引き継ぎ:** 実モデルで上流から下流への型付き依頼を確認。下流から上流への確認と回答を2往復行い、その後は下流が追加引き継ぎなしで最終回答するところまで検証済み。追加する専門役は1段に限定し、自己委譲、既存担当への重複、第三の担当への横流し、3往復目を制御層で拒否する。

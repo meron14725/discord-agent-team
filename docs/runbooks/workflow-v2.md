@@ -5,7 +5,8 @@
 2026-09-13に実運用設定で`workflow_v2.enabled: true`へ移行した。現在は`project` aliasをallowlistとし、最初の案件チャンネルにはgeneralを割り当てている。
 既存v1案件は移行せず、そのまま完了させる。v2はallowlistに入った新規案件だけを対象にする。
 
-移行前バックアップは`backups/pre-v2-20260913`。schema migration version 1・2、Dockerの4サービス、launchdの6 worker、統括Botによる完了通知を確認した。
+移行前バックアップは`backups/pre-v2-20260913`。schema migration version 1・2、Dockerの4サービス、launchdの6 workerを確認した。
+移行直後の実モデル疎通では、Codexの厳格な構造化出力が全プロパティを`required`に含めるよう要求し、統括workerがHTTP 503で停止した。Codexへ渡すschemaを再帰的に厳格化して復旧し、統括workerとv2専用workerの両方でHTTP 200と有効な構造化出力を確認した。復旧後の完了通知は統括Botからオーナーへメンション付きで送信する。
 
 ## 1案件の流れ
 

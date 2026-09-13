@@ -877,7 +877,7 @@ class Engine:
             with self.db.transaction() as session:
                 task, job = self.current(session, job_id, fence)
                 plan = session.get(PlanVersion, task.current_plan_version_id)
-                source = self.github.source(repo, task.data["head_sha"])
+                source = self.github.source_context(repo, task.data["head_sha"])["files"]
                 body = source.get(plan.path, "")
                 try:
                     validate_review_coverage(
@@ -1237,7 +1237,7 @@ class Engine:
                             )
                             self.enqueue_v2(s, task, "draft_requirements", "cto")
                             continue
-                        plan_source = self.github.source(repo, snap["head_sha"])
+                        plan_source = self.github.source_context(repo, snap["head_sha"])["files"]
                         if digest(plan_source.get(task.data.get("plan_path", ""), "")) != task.data.get(
                             "plan_hash"
                         ):

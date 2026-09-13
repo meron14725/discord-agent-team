@@ -849,3 +849,28 @@ def test_planner_gets_verified_approval_despite_draft_status(team, monkeypatch, 
     else:
         assert received == ['plan']
         assert service.status(task['id'])['state'] == 'ReviewingImplementationPlan'
+
+
+def test_plan_review_uses_filtered_snapshot_instead_of_decoding_binary_files(team, monkeypatch):
+    settings, db, github, service, engine, command = team
+    service_for(team)
+    settings.workflow_v2.github_issue_conditional_updates = True
+    task = command('request', repo='demo', text='人格の計画')
+    step(engine)
+    task = service.status(task['id'])
+    command('approve_requirements', task_id=task['id'],
+            hash=task['data']['requirements_hash'],
+            confirmation_id=task['data']['requirements_confirmation_id'])
+    step(engine)
+    task = service.status(task['id'])
+    assert task['state'] == 'ReviewingImplementationPlan'
+    snapshot = github.source_context(settings.repos['demo'], task['data']['head_sha'])
+    assert task['data']['plan_path'] in snapshot['files']
+
+    def legacy_source(*args):
+        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'binary file in repository')
+
+    monkeypatch.setattr(github, 'source', legacy_source)
+    monkeypatch.setattr(github, 'source_context', lambda *args: snapshot)
+    step(engine)
+    assert service.status(task['id'])['state'] == 'AwaitingPlanApproval'

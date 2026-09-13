@@ -339,10 +339,22 @@ class GitHub:
                 },
             )
         )
-        actual = self.api(repo, "GET", f"pulls/{pr['number']}")
-        if actual["head"]["sha"] != head or actual["head"]["repo"]["full_name"] != repo.repository:
-            raise GuardError("Published PR does not match expected commit/repository")
+        actual = self.confirm_published_pr(repo, pr["number"], branch, head)
         return {"pr": actual["number"], "head_sha": head, "pr_url": actual["html_url"]}
+
+    def confirm_published_pr(self, repo, number, branch, head):
+        for attempt in range(3):
+            actual = self.api(repo, "GET", f"pulls/{number}")
+            if actual["head"]["repo"]["full_name"] != repo.repository:
+                raise GuardError("Published PR repository mismatch")
+            if actual["head"]["sha"] == head:
+                return actual
+            ref = self.api(repo, "GET", f"git/ref/heads/{branch}")
+            if ref["object"]["sha"] != head:
+                raise GuardError("Branch changed while confirming published PR")
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        raise GuardError("Published PR does not match expected commit/repository")
 
     def review(self, repo, task, result, key):
         reviews = self.pages(repo, f"pulls/{task.data['pr']}/reviews", "reviewer")

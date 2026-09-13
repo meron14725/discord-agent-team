@@ -593,3 +593,29 @@ def test_github_changed_file_read_does_not_decode_unrelated_binary(team, monkeyp
     selected = 'docs/work-items/issue-5/plans/v1.md'
     assert github.source(settings.repos['demo'], 'a' * 40, paths={selected}) == {selected: '# Plan'}
     assert 'git/blobs/binary' not in calls
+
+
+@pytest.mark.parametrize('case', ['lag', 'foreign_repo', 'moved_ref', 'stale'])
+def test_published_pr_confirmation_retries_only_expected_branch(team, monkeypatch, case):
+    settings, *_ = team
+    github = GitHub(settings, {'publisher': 'test-token'})
+    repo = settings.repos['demo']
+    reads = []
+    monkeypatch.setattr('agent_team.adapters.github.time.sleep', lambda _: None)
+
+    def api(repo, method, path):
+        assert method == 'GET'
+        if path.startswith('pulls/'):
+            reads.append(path)
+            return {'head': {'repo': {'full_name': 'foreign/repo' if case == 'foreign_repo' else repo.repository},
+                             'sha': 'new' if case == 'lag' and len(reads) == 2 else 'old'}}
+        return {'object': {'sha': 'other' if case == 'moved_ref' else 'new'}}
+
+    monkeypatch.setattr(github, 'api', api)
+    if case == 'lag':
+        assert github.confirm_published_pr(repo, 8, 'agent/test', 'new')['head']['sha'] == 'new'
+        assert len(reads) == 2
+    else:
+        with pytest.raises(GuardError):
+            github.confirm_published_pr(repo, 8, 'agent/test', 'new')
+        assert len(reads) == (3 if case == 'stale' else 1)

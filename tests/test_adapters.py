@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 from test_workflow import step
 
 from agent_team.adapters.codex import CodexRunner, MockRunner, codex_output_schema
-from agent_team.adapters.discord import owner_message_links
+from agent_team.adapters.discord import (
+    asks_task_status,
+    confirms_issue_body_update,
+    format_task_status,
+    owner_message_links,
+    task_id_from_text,
+)
 from agent_team.adapters.github import GitHub, MockGitHub
 from agent_team.api import create_app
 from agent_team.contracts import CommandRequest, PatchProposal, RunRequest, WorkspaceReadRequest
@@ -46,6 +52,50 @@ def test_owner_message_links_only_returns_distinct_same_guild_targets():
     )
 
     assert owner_message_links(text, "123") == [(456, 789), (777, 888)]
+
+
+def test_replied_bot_message_resolves_task_status_intent():
+    assert task_id_from_text("**TASK-bfa8e370-148**\nBlocked") == "TASK-bfa8e370-148"
+    assert task_id_from_text("通常の会話") == ""
+    assert asks_task_status("これ、いまどうなってる？")
+    assert asks_task_status("何待ちで止まってるの？")
+    assert not asks_task_status("要件を一つ追加して")
+    assert confirms_issue_body_update("Issue本文へ反映した")
+    assert confirms_issue_body_update("Issue本文へ反映しました")
+    assert not confirms_issue_body_update("まだ反映していない")
+
+
+def test_task_status_reply_uses_database_state_and_latest_proposal():
+    body = format_task_status(
+        {
+            "id": "TASK-bfa8e370-148",
+            "state": "Blocked",
+            "data": {
+                "reason": "Issueコメントの要件案を本文へ反映後、再試行してください。",
+                "requirements_proposal_url": "https://example.test/latest",
+            },
+        }
+    )
+
+    assert "停止中 (`Blocked`)" in body
+    assert "Issueコメントの要件案" in body
+    assert "https://example.test/latest" in body
+    assert "次:" in body
+
+
+def test_internal_task_status_endpoint_returns_current_task(team):
+    settings, db, _, _, _, command = team
+    task = command("request", repo="demo", text="状態参照テスト")
+    app = create_app(db, settings, "internal-test-token-that-is-long-enough")
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer internal-test-token-that-is-long-enough"}
+
+    response = client.get(f"/tasks/{task['id']}", headers=headers)
+    missing = client.get("/tasks/TASK-UNKNOWN", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["state"] == task["state"]
+    assert missing.status_code == 404
 
 
 def test_per_task_repo_created_only_after_spec_approval(team):

@@ -733,6 +733,13 @@ def create_app(db=None, settings=None, token=None):
             ]
             return legacy + topics
 
+    @app.get("/tasks/{task_id}", dependencies=[Depends(authenticate)])
+    def task_status(task_id: str):
+        try:
+            return service.status(task_id)
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
+
     @app.get("/metrics", dependencies=[Depends(authenticate)])
     def metrics():
         from collections import Counter

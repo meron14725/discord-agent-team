@@ -12,7 +12,7 @@ from discord import app_commands
 from ..config import load_settings, secret
 from ..contracts import SpecialistDecision
 from ..coordination import resolve_specialist_handoffs
-from ..discord_delivery import discord_parts, specialist_next_step
+from ..discord_delivery import discord_parts, specialist_next_step, task_next_step
 from ..redaction import SecretScanner
 
 log = logging.getLogger(__name__)
@@ -20,6 +20,79 @@ log = logging.getLogger(__name__)
 DISCORD_MESSAGE_LINK = re.compile(
     r"https://(?:www\.)?discord(?:app)?\.com/channels/(?P<guild>\d+)/(?P<channel>\d+)/(?P<message>\d+)"
 )
+TASK_ID = re.compile(r"\bTASK-[A-Za-z0-9-]+\b")
+
+
+def task_id_from_text(text: str) -> str:
+    match = TASK_ID.search(text)
+    return match.group(0) if match else ""
+
+
+def asks_task_status(text: str) -> bool:
+    compact = "".join(text.casefold().split())
+    return any(
+        phrase in compact
+        for phrase in (
+            "状況",
+            "状態",
+            "進捗",
+            "どうなって",
+            "どういうこと",
+            "何待ち",
+            "止まって",
+            "status",
+            "progress",
+        )
+    )
+
+
+def confirms_issue_body_update(text: str) -> bool:
+    compact = "".join(text.casefold().split())
+    if any(phrase in compact for phrase in ("未反映", "反映してない", "反映していない")):
+        return False
+    return any(
+        phrase in compact
+        for phrase in (
+            "反映した",
+            "反映しました",
+            "反映済み",
+            "更新した",
+            "更新しました",
+            "更新済み",
+            "コピーした",
+            "コピーしました",
+            "実行した",
+            "実行しました",
+        )
+    )
+
+
+def format_task_status(task: dict) -> str:
+    state_labels = {
+        "Blocked": "停止中",
+        "DraftingRequirements": "要件作成中",
+        "AwaitingRequirementsConfirmation": "要件確認待ち",
+        "PlanningImplementation": "実装計画作成中",
+        "AwaitingPlanApproval": "実装計画の承認待ち",
+        "Implementing": "実装中",
+        "Reviewing": "レビュー中",
+        "AwaitingChecks": "CI確認中",
+        "AwaitingMergeApproval": "マージ承認待ち",
+        "Merged": "完了",
+        "Cancelled": "中止",
+    }
+    data = task.get("data", {})
+    state = task["state"]
+    lines = [
+        f"**{task['id']} の現在状況**",
+        f"状態: {state_labels.get(state, state)} (`{state}`)",
+    ]
+    if reason := data.get("reason"):
+        lines.append(f"理由: {reason}")
+    lines.append(f"次: {task_next_step(state)}")
+    if proposal := data.get("requirements_proposal_url"):
+        lines.append(f"最新の要件案: {proposal}")
+    return "\n".join(lines)
 
 
 def owner_message_links(text: str, guild_id: str, limit: int = 3) -> list[tuple[int, int]]:
@@ -166,6 +239,51 @@ async def serve():
                 continue
             references.append(f"参照したオーナー発言 ({message_id}):\n{body[:3000]}")
         return content if not references else content + "\n\n" + "\n\n".join(references)
+
+    async def task_from_referenced_bot_message(message):
+        reference = message.reference
+        if reference is None or reference.message_id is None:
+            return None
+        referenced = reference.resolved
+        if not isinstance(referenced, discord.Message):
+            try:
+                channel = message.channel
+                if reference.channel_id and reference.channel_id != message.channel.id:
+                    channel = await coordinator.fetch_channel(reference.channel_id)
+                referenced = await channel.fetch_message(reference.message_id)
+            except Exception:
+                log.warning(
+                    "Referenced Discord message unavailable message=%s reference=%s",
+                    message.id,
+                    reference.message_id,
+                    exc_info=True,
+                )
+                return None
+        team_bot_ids = {
+            client.user.id
+            for client in dict.fromkeys(role_clients.values())
+            if client.user is not None
+        }
+        if referenced.author.id not in team_bot_ids:
+            return None
+        task_id = task_id_from_text(referenced.content)
+        if not task_id:
+            return None
+        response = await api.get(f"/tasks/{task_id}")
+        return response.json() if response.is_success else None
+
+    async def reply_with_task_status(message, task, event_kind="status"):
+        await send_chunked(
+            message.channel,
+            format_task_status(task),
+            event_id=f"task-{event_kind}-{message.id}",
+            bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
+            first_kwargs={
+                "reference": message,
+                "mention_author": False,
+                "allowed_mentions": discord.AllowedMentions.none(),
+            },
+        )
 
     async def sre_platform_snapshot(guild_id: int):
         guild = sre.get_guild(guild_id)
@@ -499,6 +617,47 @@ async def serve():
             return
         content = message.content.strip()
         if not content:
+            return
+        referenced_task = await task_from_referenced_bot_message(message)
+        if referenced_task is not None:
+            if asks_task_status(content):
+                await reply_with_task_status(message, referenced_task)
+                return
+            action = "answer"
+            if (
+                referenced_task["state"] == "Blocked"
+                and referenced_task["data"].get("reason")
+                == "Issueコメントの要件案を本文へ反映後、再試行してください。"
+                and confirms_issue_body_update(content)
+            ):
+                action = "retry"
+            response = await api.post(
+                "/commands",
+                json={
+                    "action": action,
+                    "event_id": str(message.id),
+                    "actor": str(message.author.id),
+                    "guild": str(message.guild.id),
+                    "channel": str(message.channel.id),
+                    "task_id": referenced_task["id"],
+                    "text": content if action == "answer" else "",
+                },
+            )
+            if response.is_success:
+                await reply_with_task_status(message, response.json(), event_kind="accepted")
+            else:
+                detail = response.json().get("detail", "案件への返信を処理できませんでした。")
+                await send_chunked(
+                    message.channel,
+                    f"**{referenced_task['id']}**\n{detail}",
+                    event_id=f"task-error-{message.id}",
+                    bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
+                    first_kwargs={
+                        "reference": message,
+                        "mention_author": False,
+                        "allowed_mentions": discord.AllowedMentions.none(),
+                    },
+                )
             return
         content = await expand_owner_message_links(content, str(message.guild.id))
         if isinstance(message.channel, discord.Thread):

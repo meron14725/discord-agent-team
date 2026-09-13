@@ -750,6 +750,7 @@ class Engine:
                             session,
                             task,
                             "GitHubはIssue更新の安全な条件付きPATCHに対応していません。"
+                            f"要件案: {proposal['url']}\n"
                             "コメントの要件案をIssue本文へ反映し、Discordで再試行してください。",
                             role="cto",
                             mention_owner=True,

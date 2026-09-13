@@ -343,6 +343,12 @@ def test_v2_safe_issue_proposal_resumes_from_saved_result_after_owner_applies_it
     blocked = service.status(task["id"])
     assert blocked["state"] == "Blocked"
     assert blocked["data"]["requirements_proposal_hash"]
+    with db.transaction() as session:
+        notices = list(session.scalars(select(Outbox).where(Outbox.task_id == task["id"])))
+        assert any(
+            blocked["data"]["requirements_proposal_url"] in notice.data.get("body", "")
+            for notice in notices
+        )
 
     issue_number = blocked["data"]["requirements_issue"]
     comments = github.read(f"issue-comments:{issue_number}")

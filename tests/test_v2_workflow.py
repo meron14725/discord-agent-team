@@ -561,6 +561,16 @@ def test_v2_retry_requeues_failed_requirements_job(team):
     assert blocked["data"]["retry_state"] == "DraftingRequirements"
     assert "GitHub準備処理失敗" in blocked["data"]["reason"]
 
+    # A prior proposal may still be recorded when a newer requirements draft fails.
+    # Retrying that failure must requeue the failed job instead of the stale proposal job.
+    with db.transaction() as session:
+        task = session.get(Task, "TASK-RETRY-V2")
+        task.data = {
+            **task.data,
+            "requirements_proposal_hash": "sha256:stale",
+            "requirements_proposal_url": "https://example.test/stale-proposal",
+        }
+
     retried = command("retry", task_id="TASK-RETRY-V2")
     assert retried["state"] == "DraftingRequirements"
     with db.transaction() as session:

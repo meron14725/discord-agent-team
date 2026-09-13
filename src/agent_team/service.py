@@ -287,6 +287,8 @@ class TaskService:
                     task.workflow_version == 2
                     and action == "retry"
                     and task.data.get("requirements_proposal_hash")
+                    and task.data.get("reason")
+                    == "Issueコメントの要件案を本文へ反映後、再試行してください。"
                 ):
                     proposal_job = s.scalar(
                         select(Job)

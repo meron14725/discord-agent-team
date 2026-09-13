@@ -795,3 +795,53 @@ def test_owner_decision_topic_is_reminded_once_after_24_hours(team):
             )
         )
         assert reminder.data["thread_id"] == "123"
+
+
+@pytest.mark.parametrize('corruption', [None, 'hash', 'missing'])
+def test_planner_gets_verified_approval_despite_draft_status(team, monkeypatch, corruption):
+    from agent_team.adapters.codex import MockRunner
+
+    settings, db, _, service, engine, command = team
+    service_for(team)
+    settings.workflow_v2.github_issue_conditional_updates = True
+    original = MockRunner.run
+    received = []
+
+    async def run(self, request):
+        if request.kind == 'plan':
+            context = json.loads(request.prompt)
+            assert '未承認' in context['approved_requirements']
+            evidence = context['trusted_requirements_approval']
+            assert evidence['status'] == 'approved'
+            assert evidence['body_hash'] == request.spec_hash
+            assert evidence['spec_version'] == request.spec_version
+            assert evidence['actor_id'] == 'demo-owner'
+            assert evidence['confirmation_id'] == confirmation
+            assert evidence['approved_at']
+            received.append(request.kind)
+        response = await original(self, request)
+        if request.kind == 'draft_requirements':
+            response.result.spec_markdown += '\n草案作成時点の状態: 未承認\n'
+        return response
+
+    monkeypatch.setattr(MockRunner, 'run', run)
+    task = command('request', repo='demo', text='人格を導入する')
+    step(engine)
+    task = service.status(task['id'])
+    confirmation = task['data']['requirements_confirmation_id']
+    command('approve_requirements', task_id=task['id'],
+            hash=task['data']['requirements_hash'], confirmation_id=confirmation)
+    if corruption:
+        with db.transaction() as session:
+            grant = session.scalar(select(ApprovalGrant).where(ApprovalGrant.task_id == task['id']))
+            if corruption == 'hash':
+                grant.target_hash = 'sha256:wrong-version'
+            else:
+                session.delete(grant)
+    step(engine)
+    if corruption:
+        assert not received
+        assert service.status(task['id'])['state'] == 'Blocked'
+    else:
+        assert received == ['plan']
+        assert service.status(task['id'])['state'] == 'ReviewingImplementationPlan'

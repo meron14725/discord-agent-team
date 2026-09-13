@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from .contracts import RunRequest, RunResponse
 from .db import (
+    ApprovalGrant,
     Artifact,
     Consultation,
     Delegation,
@@ -443,6 +444,32 @@ class Engine:
                 "updated_at"
             ] != task.data.get("requirements_updated_at"):
                 raise GuardError("GitHub Issue changed after requirements approval")
+            with self.db.transaction() as session:
+                reference = session.get(RequirementsReference, task.requirements_reference_id)
+                approval = session.scalar(select(ApprovalGrant).where(
+                    ApprovalGrant.task_id == task.id,
+                    ApprovalGrant.stage == "requirements",
+                    ApprovalGrant.confirmation_id == task.data.get("requirements_approval_id"),
+                    ApprovalGrant.target_hash == authority["body_hash"],
+                ))
+                if (
+                    reference is None or reference.status != "approved"
+                    or reference.repository != repo.repository
+                    or reference.issue_number != issue_number
+                    or reference.body_hash != authority["body_hash"]
+                    or approval is None or approval.consumed_at is None
+                ):
+                    raise GuardError("Verified requirements approval is unavailable")
+                approval_evidence = {
+                    "status": "approved", "stage": "requirements",
+                    "task_id": task.id, "repository": repo.repository,
+                    "issue_number": issue_number, "spec_version": task.spec_version,
+                    "body_hash": approval.target_hash, "actor_id": approval.actor_id,
+                    "confirmation_id": approval.confirmation_id,
+                    "approved_at": approval.consumed_at,
+                    "scope": "Requirements approval permits implementation planning only; plan, implementation and merge approvals are separate.",
+                    "authority": "Verified control-plane approval record for this exact Issue body. Draft-time status text in the immutable body is historical; do not ask the owner to repeat this requirements approval.",
+                }
             plan_body = ""
             head = task.data.get("head_sha", "")
             if task.data.get("plan_path"):
@@ -473,6 +500,7 @@ class Engine:
                     "implementation_plan": plan_body,
                     "required_output": "判断材料、選択肢、推奨案、未解決事項、参照資料",
                 }
+            context["trusted_requirements_approval"] = approval_evidence
             model_snapshot = self.github.source_context(repo, head or base)
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]

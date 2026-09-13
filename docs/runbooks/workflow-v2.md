@@ -82,3 +82,5 @@ DBスキーマv3は既存の使用回数と相談履歴を保持して制約を�
 実装開始時は要件承認に加えて、計画版・ハッシュ・base SHAに一致する承認記録を照合して担当へ渡す。再依頼も実行予算を消費する。承認不足や別版への変更を自動承認で解決してはならない。
 
 Issue更新後、要件整理中・要件確認待ち・承認を失効した確認待ちの案件を定期照合が再度取り消してはならない。Paused/Cancelledも再開しない。要件本文が実際に変更された場合は、その版の要件確認へ進む。
+
+ホストPythonの依存パッケージ読込が`Resource deadlock avoided`で失敗した場合は、再起動の繰り返しだけでは直らない。Documents外の専用仮想環境へ`uv sync --frozen --no-dev`で依存を再構築し、launchdのPythonおよび環境変数`TEAM_WORKER_PYTHON`へ指定する。各起動スクリプトはこの指定を優先し、未指定時は従来の`.venv/bin/python`を使う。現行Macは`~/.local/share/discord-agent-team/venv`を使用する。6つのworkerのヘルスチェック成功を確認してから停止案件を再試行する。

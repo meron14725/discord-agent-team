@@ -7,5 +7,5 @@ export PYTHONPATH="$PWD/src"
 export AUTH_MODE=chatgpt
 export WORKER_ROLE=sre
 export WORKER_CONCURRENCY=1
-exec .venv/bin/python -m uvicorn agent_team.worker:create_sbx_worker \
+exec "${TEAM_WORKER_PYTHON:-.venv/bin/python}" -m uvicorn agent_team.worker:create_sbx_worker \
   --factory --host 127.0.0.1 --port 8093

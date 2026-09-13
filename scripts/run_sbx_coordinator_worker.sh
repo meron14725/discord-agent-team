@@ -6,5 +6,5 @@ export SBX_STATE_DIR="$PWD/artifacts/sbx-coordinator-state"
 export PYTHONPATH="$PWD/src"
 export AUTH_MODE=chatgpt
 export WORKER_ROLE=coordinator
-exec .venv/bin/python -m uvicorn agent_team.worker:create_sbx_worker \
+exec "${TEAM_WORKER_PYTHON:-.venv/bin/python}" -m uvicorn agent_team.worker:create_sbx_worker \
   --factory --host 127.0.0.1 --port 8091

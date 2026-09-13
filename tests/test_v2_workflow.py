@@ -810,6 +810,10 @@ def test_planner_gets_verified_approval_despite_draft_status(team, monkeypatch, 
     async def run(self, request):
         if request.kind == 'plan':
             context = json.loads(request.prompt)
+            from agent_team.planning import REQUIRED_PLAN_SECTIONS
+
+            assert context['required_plan_sections'] == list(REQUIRED_PLAN_SECTIONS)
+            assert 'do not abbreviate' in context['plan_format_contract']
             assert '未承認' in context['approved_requirements']
             evidence = context['trusted_requirements_approval']
             assert evidence['status'] == 'approved'

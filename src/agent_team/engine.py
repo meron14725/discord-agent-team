@@ -32,7 +32,7 @@ from .explanations import (
     RemoteExplanationRenderer,
     bind_explanation,
 )
-from .planning import validate_plan, validate_review_coverage
+from .planning import REQUIRED_PLAN_SECTIONS, validate_plan, validate_review_coverage
 from .policy import GuardError, digest, merge_gate, validate_files, validate_review
 from .prompt_context import load_agent_prompt_context, load_vendor_skill_context
 from .service import STOPPED, enqueue, invalidate, notify, transition
@@ -501,6 +501,13 @@ class Engine:
                     "required_output": "判断材料、選択肢、推奨案、未解決事項、参照資料",
                 }
             context["trusted_requirements_approval"] = approval_evidence
+            if kind == "plan":
+                context["required_plan_sections"] = list(REQUIRED_PLAN_SECTIONS)
+                context["plan_format_contract"] = (
+                    "Use Markdown headings containing every exact required_plan_sections label. "
+                    "Give each required_acceptance_ids item its own mapping to changes and tests; "
+                    "do not abbreviate acceptance IDs as a range."
+                )
             model_snapshot = self.github.source_context(repo, head or base)
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -48,6 +50,54 @@ def create_v2(db, service):
         )
         assert task.workflow_version == 2
     return task.id
+
+
+def test_requirements_worker_receives_existing_repository(team, monkeypatch):
+    from agent_team.adapters.codex import MockRunner
+
+    _, _, github, _, engine, _ = team
+    db, service = service_for(team)
+    create_v2(db, service)
+    original = MockRunner.run
+    seen = []
+
+    async def inspect(self, request):
+        assert request.kind == "draft_requirements"
+        assert request.files == github.source_context(team[0].repos["demo"], request.base_sha)["files"]
+        assert request.files
+        assert json.loads(request.prompt)["repository_manifest"]
+        seen.append(request.kind)
+        return await original(self, request)
+
+    monkeypatch.setattr(MockRunner, "run", inspect)
+    step(engine)
+    assert seen == ["draft_requirements"]
+
+
+def test_v2_clarification_is_visible_waiting_state(team, monkeypatch):
+    from agent_team.adapters.codex import MockRunner
+
+    _, _, _, _, engine, _ = team
+    db, service = service_for(team)
+    task_id = create_v2(db, service)
+    original = MockRunner.run
+
+    async def clarify(self, request):
+        response = await original(self, request)
+        response.result.status = "needs_clarification"
+        response.result.summary = "公開範囲の確認が必要です"
+        response.result.questions = ["社内向けですか？"]
+        return response
+
+    monkeypatch.setattr(MockRunner, "run", clarify)
+    step(engine)
+    with db.transaction() as session:
+        task = session.get(Task, task_id)
+        assert task.state == "Blocked"
+        assert "確認待ち" in task.data["reason"]
+        assert session.scalar(select(Job).where(Job.task_id == task_id)).status == "done"
+        messages = list(session.scalars(select(Outbox).where(Outbox.task_id == task_id)))
+        assert any("社内向けですか？" in message.data["body"] for message in messages)
 
 
 def register_and_approve_requirements(db, service):

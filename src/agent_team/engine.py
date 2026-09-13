@@ -431,7 +431,9 @@ class Engine:
                     )
                 },
             }
-            files = {}
+            model_snapshot = self.github.source_context(repo, base)
+            files = model_snapshot["files"]
+            context["repository_manifest"] = model_snapshot["manifest"]
         else:
             issue_number = task.data.get("requirements_issue")
             if not issue_number:
@@ -471,12 +473,9 @@ class Engine:
                     "implementation_plan": plan_body,
                     "required_output": "判断材料、選択肢、推奨案、未解決事項、参照資料",
                 }
-            if kind in {"plan", "review_plan"}:
-                files = {}
-            else:
-                model_snapshot = self.github.source_context(repo, head or base)
-                files = model_snapshot["files"]
-                context["repository_manifest"] = model_snapshot["manifest"]
+            model_snapshot = self.github.source_context(repo, head or base)
+            files = model_snapshot["files"]
+            context["repository_manifest"] = model_snapshot["manifest"]
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,
             "trusted_role_policy": self.prompt_context.role_policies[role],
@@ -694,6 +693,7 @@ class Engine:
                 job.status = "done"
                 self.release_repository_lease(session, job)
                 if result.status == "needs_clarification":
+                    transition(session, task, "Blocked", "担当からの確認待ち: " + result.summary[:900])
                     notify(session, task, "\n".join(result.questions[:5]), role=job.role)
                 else:
                     transition(session, task, "Blocked", result.summary[:1000])

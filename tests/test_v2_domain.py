@@ -6,7 +6,7 @@ from agent_team.explanations import bind_explanation, render_explanation
 from agent_team.planning import plan_path, validate_plan, validate_review_coverage
 from agent_team.policy import GuardError
 from agent_team.renderer import create_renderer
-from agent_team.requirements import bind_requirements
+from agent_team.requirements import bind_requirements, extract_acceptance_criteria
 from agent_team.workflow import WorkflowV2Service
 from agent_team.workspaces import TopicLink, WorkItemIndex, WorkspaceService, render_index
 
@@ -33,6 +33,17 @@ x
 ## 未解決事項
 なし
 """
+
+
+def test_acceptance_criteria_supports_plain_and_markdown_emphasized_ids():
+    body = """- AC-001: 通常表記の検証可能な受入条件
+- **AC-002**: Markdownで強調された検証可能な受入条件
+"""
+
+    assert extract_acceptance_criteria(body) == {
+        "AC-001": "通常表記の検証可能な受入条件",
+        "AC-002": "Markdownで強調された検証可能な受入条件",
+    }
 
 
 PLAN = """# 実装計画

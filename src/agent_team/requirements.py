@@ -16,7 +16,9 @@ REQUIRED_SECTIONS = (
     "テスト",
     "未解決事項",
 )
-AC_PATTERN = re.compile(r"(?m)^\s*(?:[-*]\s*)?(AC-\d+)\s*[:：-]\s*(\S.*)$")
+AC_PATTERN = re.compile(
+    r"(?m)^\s*(?:[-*]\s*)?(?:\*\*(AC-\d+)\*\*|(AC-\d+))\s*[:：-]\s*(\S.*)$"
+)
 HEADING_PATTERN = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
 
 
@@ -33,7 +35,8 @@ class RequirementsIdentity:
 def extract_acceptance_criteria(body: str) -> dict[str, str]:
     """受入条件を順序を保って抽出し、曖昧な重複を拒否する。"""
     criteria: dict[str, str] = {}
-    for acceptance_id, statement in AC_PATTERN.findall(body):
+    for emphasized_id, plain_id, statement in AC_PATTERN.findall(body):
+        acceptance_id = emphasized_id or plain_id
         if acceptance_id in criteria:
             raise GuardError(f"Duplicate acceptance criterion: {acceptance_id}")
         if len(statement.strip()) < 8:

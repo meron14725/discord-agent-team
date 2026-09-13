@@ -104,6 +104,13 @@ class RemoteRunner:
         self.locations[request.job_id] = url
         async with httpx.AsyncClient(timeout=request.timeout + 120) as client:
             r = await client.post(url + "/run", json=request.model_dump(), headers=self.headers)
+            if r.status_code == 500:
+                try:
+                    detail = r.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail == "GuardError: Brokered implementation returned no patch proposal":
+                    raise GuardError("Brokered implementation returned no patch proposal")
             r.raise_for_status()
             return RunResponse.model_validate(r.json())
 

@@ -901,3 +901,70 @@ def test_budget_retry_preserves_usage_and_rejects_unchanged_limit_or_stale_conte
     assert engine.claim() is not None
     with db.transaction() as session:
         assert session.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task_id)).model_reservations == 31
+
+
+def approved_implementation(team):
+    settings, _, _, service, engine, command = team
+    service_for(team)
+    settings.workflow_v2.github_issue_conditional_updates = True
+    task = command('request', repo='demo', text='recovery')
+    step(engine)
+    task = service.status(task['id'])
+    command('approve_requirements', task_id=task['id'], hash=task['data']['requirements_hash'],
+            confirmation_id=task['data']['requirements_confirmation_id'])
+    step(engine)
+    step(engine)
+    task = service.status(task['id'])
+    command('approve_plan', task_id=task['id'], hash=task['data']['plan_hash'],
+            base_sha=task['data']['base_sha'], confirmation_id=task['data']['plan_confirmation_id'])
+    return task['id']
+
+
+def test_patch_recovery_supplies_approval_and_feedback_once(team):
+    _, db, _, service, engine, _ = team
+    task_id = approved_implementation(team)
+    claim = engine.claim()
+    req = engine.prepare(*claim)
+    assert json.loads(req.prompt)['trusted_plan_approval']['status'] == 'approved'
+    error = GuardError('Brokered implementation returned no patch proposal')
+    engine.fail(*claim, error)
+    claim = engine.claim()
+    req = engine.prepare(*claim)
+    assert 'non-empty unified diff' in json.loads(req.prompt)['validation_feedback']
+    engine.fail(*claim, error)
+    assert service.status(task_id)['state'] == 'Blocked'
+    assert engine.claim() is None
+    with db.transaction() as session:
+        assert session.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task_id)).model_reservations > 0
+
+
+def test_implementation_rejects_missing_plan_grant(team):
+    _, db, _, service, engine, _ = team
+    task_id = approved_implementation(team)
+    with db.transaction() as session:
+        grant = session.scalar(select(ApprovalGrant).where(ApprovalGrant.task_id == task_id, ApprovalGrant.stage == 'plan'))
+        session.delete(grant)
+    with pytest.raises(GuardError, match='plan approval'):
+        engine.prepare(*engine.claim())
+
+
+@pytest.mark.parametrize('state', ['Paused', 'Cancelled', 'DraftingRequirements', 'AwaitingRequirementsConfirmation', 'Blocked'])
+def test_reconcile_does_not_restart_requirements_or_stopped_tasks(team, state):
+    _, db, github, service, engine, _ = team
+    task_id = approved_implementation(team)
+    with db.transaction() as session:
+        task = session.get(Task, task_id)
+        task.state = state
+        if state == 'Blocked':
+            task.data = {**task.data, 'requirements_approval_id': ''}
+        issue_number = task.data['requirements_issue']
+        before = session.scalar(select(func.count()).select_from(Job))
+    key = github._issue_key(issue_number)
+    with db.transaction() as session:
+        operation = session.scalar(select(Operation).where(Operation.key == 'mock:' + key))
+        operation.data = {**operation.data, 'body': operation.data['body'] + '\nchanged\n'}
+    engine.reconcile()
+    engine.reconcile()
+    assert service.status(task_id)['state'] == state
+    with db.transaction() as session:
+        assert session.scalar(select(func.count()).select_from(Job)) == before

@@ -501,6 +501,35 @@ class Engine:
                     "required_output": "判断材料、選択肢、推奨案、未解決事項、参照資料",
                 }
             context["trusted_requirements_approval"] = approval_evidence
+            if kind in {"implement", "fix"}:
+                with self.db.transaction() as session:
+                    plan = session.get(PlanVersion, task.current_plan_version_id)
+                    grant = session.scalar(select(ApprovalGrant).where(
+                        ApprovalGrant.task_id == task.id,
+                        ApprovalGrant.stage == "plan",
+                        ApprovalGrant.confirmation_id == task.data.get("plan_approval_id"),
+                    ))
+                    if (plan is None or grant is None or not grant.consumed_at
+                        or (grant.expires is not None and grant.expires <= time.time())
+                        or grant.target_hash != plan.content_hash
+                        or grant.target_sha != plan.base_sha
+                        or plan.content_hash != task.data.get("plan_hash")
+                        or plan.base_sha != task.data.get("base_sha")
+                        or plan.review_status != "approved"):
+                        raise GuardError("Verified implementation plan approval is unavailable")
+                    context["trusted_plan_approval"] = {
+                        "status": "approved", "stage": "plan", "version": plan.version,
+                        "plan_hash": grant.target_hash, "base_sha": grant.target_sha,
+                        "actor_id": grant.actor_id, "confirmation_id": grant.confirmation_id,
+                        "approved_at": grant.consumed_at,
+                        "scope": "Implement this approved plan. Publication, deployment and merge are separate gates.",
+                    }
+                if job.data.get("patch_format_retry"):
+                    context["validation_feedback"] = (
+                        "The previous completed result contained no patches. Return the implementation "
+                        "as non-empty unified diff proposals in patches; do not merely describe changes. "
+                        "If blocked or needing clarification, return that status and specific questions instead."
+                    )
             if kind == "plan":
                 context["required_plan_sections"] = list(REQUIRED_PLAN_SECTIONS)
                 context["plan_format_contract"] = (
@@ -1099,6 +1128,15 @@ class Engine:
             except GuardError:
                 return
             self.release_repository_lease(s, job)
+            if (task.workflow_version == 2 and job.kind in {"implement", "fix"}
+                and isinstance(error, GuardError)
+                and str(error) == "Brokered implementation returned no patch proposal"
+                and not job.data.get("patch_format_retry")):
+                job.data = {**job.data, "patch_format_retry": True}
+                job.status = "queued"
+                notify(s, task, "実装差分が返されなかったため、統括が出力形式の修正指示を付けて1回再依頼します。",
+                       role="coordinator")
+                return
             if task.workflow_version == 2 and not isinstance(error, GuardError):
                 failure_target = {
                     "prepare": "GitHub準備処理",
@@ -1208,11 +1246,19 @@ class Engine:
             try:
                 with self.db.transaction() as s:
                     task = task_lock(s, task_id)
+                    if task.state in {"Paused", "Cancelled"}:
+                        continue
                     if not task.data.get("pr"):
                         continue
                     repo = self.settings.repo_for(task)
                     snap = self.github.snapshot(repo, task)
                     if task.workflow_version == 2:
+                        # Requirements drafting/confirmation owns Issue synchronization.
+                        # Reconciliation must not cancel the job that handles that change.
+                        if task.state in {"DraftingRequirements", "AwaitingRequirementsConfirmation"} or (
+                            task.state == "Blocked" and not task.data.get("requirements_approval_id")
+                        ):
+                            continue
                         authority = self.github.issue_reference(
                             repo, task.data["requirements_issue"]
                         )

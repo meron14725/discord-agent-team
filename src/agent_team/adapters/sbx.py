@@ -330,6 +330,12 @@ else:
             if self.commands.scanner.scan_text(result_text).blocked:
                 raise GuardError("Potential secret blocked at sandbox result boundary")
             result = Result.model_validate_json(result_text)
+            for field in IDENTITY:
+                if getattr(result, field) != getattr(request, field):
+                    raise GuardError("Result identity mismatch")
+            if result.status != "completed":
+                return RunResponse(result=result, files={}, tests=[], usage={},
+                                   cli_version=version.strip(), elapsed_seconds=time.monotonic() - started)
             requested_paths = {path for item in result.workspace_reads for path in item.paths}
             if requested_paths - set(request.files):
                 raise GuardError("Workspace read request is outside the supplied snapshot")

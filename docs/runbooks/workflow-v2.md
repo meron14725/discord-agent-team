@@ -84,3 +84,5 @@ DBスキーマv3は既存の使用回数と相談履歴を保持して制約を�
 Issue更新後、要件整理中・要件確認待ち・承認を失効した確認待ちの案件を定期照合が再度取り消してはならない。Paused/Cancelledも再開しない。要件本文が実際に変更された場合は、その版の要件確認へ進む。
 
 ホストPythonの依存パッケージ読込が`Resource deadlock avoided`で失敗した場合は、再起動の繰り返しだけでは直らない。Documents外の専用仮想環境へ`uv sync --frozen --no-dev`で依存を再構築し、launchdのPythonおよび環境変数`TEAM_WORKER_PYTHON`へ指定する。各起動スクリプトはこの指定を優先し、未指定時は従来の`.venv/bin/python`を使う。現行Macは`~/.local/share/discord-agent-team/venv`を使用する。6つのworkerのヘルスチェック成功を確認してから停止案件を再試行する。
+
+同じ読込障害がVM復旧ジャーナルにも発生したため、状態保存先も`TEAM_WORKER_STATE_ROOT`で分離する。現行Macは`~/.local/share/discord-agent-team/state`。移行時はworkerを停止し、`sbx ls`で残存sandboxがないことを確認した。旧ジャーナルは削除しない。残存sandboxがある環境では、ジャーナルを移行・照合するまで空の状態で起動してはならない。

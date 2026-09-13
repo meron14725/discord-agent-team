@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 export WORKER_TOKEN_FILE="$PWD/secrets/worker_token"
-export SBX_STATE_DIR="$PWD/artifacts/sbx-upstream-chat-state"
+export SBX_STATE_DIR="${TEAM_WORKER_STATE_ROOT:-$PWD/artifacts}/sbx-upstream-chat-state"
 export PYTHONPATH="$PWD/src"
 export AUTH_MODE=chatgpt
 export WORKER_ROLE=conversation-upstream

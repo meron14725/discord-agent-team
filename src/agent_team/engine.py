@@ -1402,6 +1402,12 @@ class Engine:
                         .order_by(Job.created.desc())
                     )
                 )
+                # A role may finish successfully with needs_clarification. In that
+                # case the workflow deliberately keeps its drafting/planning state
+                # while it waits for an owner answer, and there is no active job to
+                # recover. Treat only a queued/running job as stalled.
+                if not active:
+                    continue
                 latest_event = session.scalar(
                     select(Event)
                     .where(Event.task_id == task.id, Event.source == "state")
@@ -1430,11 +1436,7 @@ class Engine:
                         mention_owner=True,
                     )
                     continue
-                kind, role = (
-                    (active[0].kind, active[0].role)
-                    if active
-                    else recoverable_states[task.state]
-                )
+                kind, role = active[0].kind, active[0].role
                 task.data = {**task.data, "stalled_retry_version": task.state_version}
                 self.enqueue_v2(session, task, kind, role)
                 notify(

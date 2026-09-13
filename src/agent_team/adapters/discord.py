@@ -3,6 +3,7 @@ import base64
 import hashlib
 import io
 import logging
+import re
 
 import discord
 import httpx
@@ -14,6 +15,24 @@ from ..coordination import resolve_specialist_handoffs
 from ..redaction import SecretScanner
 
 log = logging.getLogger(__name__)
+
+DISCORD_MESSAGE_LINK = re.compile(
+    r"https://(?:www\.)?discord(?:app)?\.com/channels/(?P<guild>\d+)/(?P<channel>\d+)/(?P<message>\d+)"
+)
+
+
+def owner_message_links(text: str, guild_id: str, limit: int = 3) -> list[tuple[int, int]]:
+    """Return distinct same-guild Discord message targets from owner input."""
+    links = []
+    for match in DISCORD_MESSAGE_LINK.finditer(text):
+        if match.group("guild") != guild_id:
+            continue
+        target = (int(match.group("channel")), int(match.group("message")))
+        if target not in links:
+            links.append(target)
+        if len(links) == limit:
+            break
+    return links
 
 
 async def serve():
@@ -89,6 +108,34 @@ async def serve():
             except Exception:
                 log.exception("SRE secret audit notification failed message id=%s", message.id)
         return True
+
+    async def expand_owner_message_links(content: str, guild_id: str) -> str:
+        """Resolve owner-authored same-guild references before task clarification."""
+        references = []
+        for channel_id, message_id in owner_message_links(content, guild_id):
+            try:
+                channel = await coordinator.fetch_channel(channel_id)
+                referenced = await channel.fetch_message(message_id)
+            except Exception:
+                log.warning(
+                    "Owner Discord reference unavailable channel=%s message=%s",
+                    channel_id,
+                    message_id,
+                    exc_info=True,
+                )
+                continue
+            body = referenced.content.strip()
+            if str(referenced.author.id) not in settings.owner_ids or not body:
+                continue
+            if scanner.scan_text(body).blocked:
+                log.warning(
+                    "Secret blocked in owner Discord reference channel=%s message=%s",
+                    channel_id,
+                    message_id,
+                )
+                continue
+            references.append(f"参照したオーナー発言 ({message_id}):\n{body[:3000]}")
+        return content if not references else content + "\n\n" + "\n\n".join(references)
 
     async def sre_platform_snapshot(guild_id: int):
         guild = sre.get_guild(guild_id)
@@ -423,6 +470,7 @@ async def serve():
         content = message.content.strip()
         if not content:
             return
+        content = await expand_owner_message_links(content, str(message.guild.id))
         if isinstance(message.channel, discord.Thread):
             r = await api.get("/threads")
             r.raise_for_status()
@@ -908,7 +956,7 @@ async def serve():
                             existing = await channel.send(body + "\n" + marker, **kwargs)
                         await api.post(f"/outbox/{item['id']}/ack", json={"message_id": str(existing.id)})
                     except Exception:
-                        log.warning("Notification failed: %s", item["id"])
+                        log.warning("Notification failed: %s", item["id"], exc_info=True)
                         await api.post(f"/outbox/{item['id']}/fail")
             except Exception:
                 log.warning("Control connection unavailable; retrying")

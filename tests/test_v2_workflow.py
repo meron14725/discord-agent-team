@@ -594,6 +594,33 @@ def test_v2_stalled_job_retries_once_then_blocks_and_notifies_sre(team):
         assert any(item.data.get("mention_owner") for item in notices)
 
 
+def test_v2_owner_clarification_wait_is_not_recovered_as_a_stalled_job(team):
+    settings, db, _, _, engine, _ = team
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    workflow = WorkflowV2Service(db, settings)
+    with db.transaction() as session:
+        workflow.create_task(
+            session,
+            task_id="TASK-WAITING-OWNER",
+            repo="demo",
+            repository="example/demo",
+            summary="waiting for an owner decision",
+        )
+        job = session.scalar(select(Job).where(Job.task_id == "TASK-WAITING-OWNER"))
+        job.status = "done"
+        started = job.created
+
+    engine.recover_stalled_v2(started + settings.workflow_v2.stalled_seconds * 3)
+
+    with db.transaction() as session:
+        task = session.get(Task, "TASK-WAITING-OWNER")
+        jobs = list(session.scalars(select(Job).where(Job.task_id == task.id)))
+        assert task.state == "DraftingRequirements"
+        assert len(jobs) == 1
+        assert jobs[0].status == "done"
+
+
 def test_v2_reports_slow_start_once_when_worker_capacity_is_available(team):
     settings, db, _, _, engine, _ = team
     settings.workflow_v2.enabled = True

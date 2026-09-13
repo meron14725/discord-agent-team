@@ -12,6 +12,8 @@
 
 最初のper-task案件では、要件Issue作成前に未作成の案件repositoryからbase branchを読もうとしてGitHub 404になった。v2はIssueを正本にするため、private案件repositoryを冪等作成し、templateのbaseが読めるまで限定再試行してからIssueを作る。準備、worker実行、成果物処理の失敗通知を区別し、失敗したv2 jobは同じ工程と保存済みfence情報から再試行する。
 
+同案件の要件確認では、CTOが`needs_clarification`で正常終了してオーナー回答を待っている状態をstalled監視が実行停止と誤認し、不要な再実行後にBlockedへ遷移した。stalled回復はqueued/runningのjobが実在する場合だけに限定した。また、オーナーが同一guild内の過去メッセージを回答として示した場合は、統括Botが最大3件まで、同じguildかつ登録オーナー本人の投稿だけを読み取って本文を回答へ付加する。参照本文にも秘密検査を適用する。
+
 ## 1案件の流れ
 
 1. オーナーがrepository別チャンネルへ自然文で目的を書く。

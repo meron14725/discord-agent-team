@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from test_workflow import step
 
 from agent_team.adapters.codex import CodexRunner, MockRunner, codex_output_schema
+from agent_team.adapters.discord import owner_message_links
 from agent_team.adapters.github import GitHub, MockGitHub
 from agent_team.api import create_app
 from agent_team.contracts import CommandRequest, PatchProposal, RunRequest, WorkspaceReadRequest
@@ -34,6 +35,17 @@ def test_codex_output_schema_requires_every_object_property():
                 assert_strict_objects(value)
 
     assert_strict_objects(schema)
+
+
+def test_owner_message_links_only_returns_distinct_same_guild_targets():
+    text = (
+        "https://discord.com/channels/123/456/789 "
+        "https://discord.com/channels/999/456/000 "
+        "https://discordapp.com/channels/123/456/789 "
+        "https://www.discord.com/channels/123/777/888"
+    )
+
+    assert owner_message_links(text, "123") == [(456, 789), (777, 888)]
 
 
 def test_per_task_repo_created_only_after_spec_approval(team):

@@ -17,7 +17,8 @@ REQUIRED_SECTIONS = (
     "未解決事項",
 )
 AC_PATTERN = re.compile(
-    r"(?m)^\s*(?:[-*]\s*)?(?:\*\*(AC-\d+)\*\*|(AC-\d+))\s*[:：-]\s*(\S.*)$"
+    r"(?m)^\s*(?:[-*]\s*)?(?:\*\*(AC-\d+)\*\*|(AC-\d+))"
+    r"(?:\s*[:：-]\s*|\s+)(\S.*)$"
 )
 HEADING_PATTERN = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
 

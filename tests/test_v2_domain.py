@@ -38,11 +38,13 @@ x
 def test_acceptance_criteria_supports_plain_and_markdown_emphasized_ids():
     body = """- AC-001: 通常表記の検証可能な受入条件
 - **AC-002**: Markdownで強調された検証可能な受入条件
+- **AC-003** 区切り記号を省略した検証可能な受入条件
 """
 
     assert extract_acceptance_criteria(body) == {
         "AC-001": "通常表記の検証可能な受入条件",
         "AC-002": "Markdownで強調された検証可能な受入条件",
+        "AC-003": "区切り記号を省略した検証可能な受入条件",
     }
 
 

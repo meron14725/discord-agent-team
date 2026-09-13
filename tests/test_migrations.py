@@ -92,6 +92,7 @@ def test_v2_migration_preserves_v1_rows_and_defaults_them_to_workflow_one(tmp_pa
         assert session.execute(text("SELECT version FROM schema_migrations ORDER BY version")).scalars().all() == [
             1,
             2,
+            3,
         ]
     with db.engine.connect() as connection:
         table_names = set(inspect(connection).get_table_names())
@@ -128,7 +129,7 @@ def test_v2_migration_is_idempotent_and_database_default_remains_v1(tmp_path):
         versions = connection.execute(
             text("SELECT version, COUNT(*) FROM schema_migrations GROUP BY version ORDER BY version")
         ).all()
-        assert versions == [(1, 1), (2, 1)]
+        assert versions == [(1, 1), (2, 1), (3, 1)]
     with db.transaction() as session:
         assert session.get(Task, "TASK-RAW").workflow_version == 1
 
@@ -254,7 +255,7 @@ def test_issue_plan_confirmation_and_consultation_identities_are_unique(tmp_path
             Consultation(
                 task_id="TASK-1",
                 topic_id="TOPIC-1",
-                ordinal=6,
+                ordinal=26,
                 requester_role="cto",
                 consultant_role="analyst",
                 question_summary="over limit",
@@ -335,10 +336,52 @@ def test_workspace_topic_lease_projection_and_budget_constraints(tmp_path):
             )
         )
     with pytest.raises(IntegrityError), db.transaction() as session:
-        session.add(ExecutionBudget(task_id="TASK-2", model_reservations=31))
+        session.add(ExecutionBudget(task_id="TASK-2", model_reservations=151))
     with pytest.raises(IntegrityError), db.transaction() as session:
-        session.add(ExecutionBudget(task_id="TASK-2", consultation_reservations=16))
+        session.add(ExecutionBudget(task_id="TASK-2", consultation_reservations=76))
     with pytest.raises(IntegrityError), db.transaction() as session:
-        session.add(ExecutionBudget(task_id="TASK-2", plan_revision_reservations=4))
+        session.add(ExecutionBudget(task_id="TASK-2", plan_revision_reservations=16))
     with pytest.raises(IntegrityError), db.transaction() as session:
-        session.add(ExecutionBudget(task_id="TASK-2", implementation_revision_reservations=4))
+        session.add(ExecutionBudget(task_id="TASK-2", implementation_revision_reservations=16))
+
+
+def test_v3_expands_existing_v2_constraints_without_resetting_usage(tmp_path):
+    from sqlalchemy import CheckConstraint, MetaData
+
+    old = MetaData()
+    for table in Base.metadata.sorted_tables:
+        table.to_metadata(old)
+    for name in ('consultations', 'execution_budgets'):
+        for constraint in old.tables[name].constraints:
+            if isinstance(constraint, CheckConstraint):
+                sql = str(constraint.sqltext)
+                for new, previous in [('AND 150', 'AND 30'), ('AND 75', 'AND 15'), ('AND 25', 'AND 5'), ('AND 15', 'AND 3')]:
+                    if sql.endswith(new):
+                        sql = sql[:-len(new)] + previous
+                        break
+                constraint.sqltext = text(sql)
+    db = Database('sqlite:///' + str(tmp_path / 'v2.db'))
+    old.create_all(db.engine)
+    with db.engine.begin() as connection:
+        connection.execute(text('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)'))
+        connection.execute(text('INSERT INTO schema_migrations VALUES (1), (2)'))
+    with db.transaction() as session:
+        add_task(session, 'OLD')
+        session.add(ExecutionBudget(task_id='OLD', model_reservations=30,
+                                   consultation_reservations=15, plan_revision_reservations=3,
+                                   implementation_revision_reservations=3))
+        session.add(Consultation(task_id='OLD', topic_id='topic', ordinal=5,
+                                 requester_role='cto', consultant_role='analyst',
+                                 question_summary='question', conclusion_summary='answer'))
+    db.migrate()
+    db.migrate()
+    with db.transaction() as session:
+        budget = session.scalar(select(ExecutionBudget))
+        assert (budget.model_reservations, budget.consultation_reservations,
+                budget.plan_revision_reservations, budget.implementation_revision_reservations) == (30, 15, 3, 3)
+        assert session.scalar(select(Consultation)).conclusion_summary == 'answer'
+        budget.model_reservations = 150
+        budget.consultation_reservations = 75
+        budget.plan_revision_reservations = 15
+        budget.implementation_revision_reservations = 15
+        session.scalar(select(Consultation)).ordinal = 25

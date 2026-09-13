@@ -117,9 +117,9 @@ def test_topic_identity_is_stable_and_limits_are_strict():
     first = stable_topic_id("event-1", " API の認証方式 ")
     second = stable_topic_id("event-1", "api の認証方式")
     assert first == second
-    check_budget(topic_count=4, task_consultations=14, model_calls=29, limits=ConsultationLimits())
+    check_budget(topic_count=24, task_consultations=74, model_calls=149, limits=ConsultationLimits())
     with pytest.raises(GuardError, match="topic limit"):
-        check_budget(topic_count=5, task_consultations=14, model_calls=29, limits=ConsultationLimits())
+        check_budget(topic_count=25, task_consultations=74, model_calls=149, limits=ConsultationLimits())
 
 
 def test_delegation_keeps_typed_identity_and_prevents_cycles():

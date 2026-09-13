@@ -164,7 +164,7 @@ class Consultation(Base):
     __tablename__ = "consultations"
     __table_args__ = (
         UniqueConstraint("task_id", "topic_id", "ordinal"),
-        CheckConstraint("ordinal BETWEEN 1 AND 5", name="ck_consultation_topic_limit"),
+        CheckConstraint("ordinal BETWEEN 1 AND 25", name="ck_consultation_topic_limit"),
     )
     id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
@@ -253,18 +253,18 @@ class ExecutionBudget(Base):
     __tablename__ = "execution_budgets"
     __table_args__ = (
         CheckConstraint(
-            "model_reservations BETWEEN 0 AND 30", name="ck_execution_budget_model_limit"
+            "model_reservations BETWEEN 0 AND 150", name="ck_execution_budget_model_limit"
         ),
         CheckConstraint(
-            "consultation_reservations BETWEEN 0 AND 15",
+            "consultation_reservations BETWEEN 0 AND 75",
             name="ck_execution_budget_consultation_limit",
         ),
         CheckConstraint(
-            "plan_revision_reservations BETWEEN 0 AND 3",
+            "plan_revision_reservations BETWEEN 0 AND 15",
             name="ck_execution_budget_plan_revision_limit",
         ),
         CheckConstraint(
-            "implementation_revision_reservations BETWEEN 0 AND 3",
+            "implementation_revision_reservations BETWEEN 0 AND 15",
             name="ck_execution_budget_implementation_revision_limit",
         ),
     )

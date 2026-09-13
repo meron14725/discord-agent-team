@@ -13,11 +13,11 @@ TOPIC_ID = re.compile(r"^topic-[0-9a-f]{16}$")
 
 @dataclass(frozen=True)
 class ConsultationLimits:
-    per_topic: int = 5
-    per_task: int = 15
-    model_calls_per_task: int = 30
-    plan_fixes: int = 3
-    implementation_fixes: int = 3
+    per_topic: int = 25
+    per_task: int = 75
+    model_calls_per_task: int = 150
+    plan_fixes: int = 15
+    implementation_fixes: int = 15
 
 
 def stable_topic_id(origin_event_id: str, purpose: str) -> str:

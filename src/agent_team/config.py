@@ -54,11 +54,11 @@ class WorkflowV2(BaseModel):
     github_issue_conditional_updates: bool = False
     normal_concurrency: int = Field(default=4, ge=1, le=4)
     privileged_concurrency: int = Field(default=1, ge=1, le=1)
-    model_calls_per_task: int = Field(default=30, ge=1, le=30)
-    consultations_per_task: int = Field(default=15, ge=1, le=15)
-    consultations_per_topic: int = Field(default=5, ge=1, le=5)
-    plan_revision_limit: int = Field(default=3, ge=1, le=3)
-    implementation_revision_limit: int = Field(default=3, ge=1, le=3)
+    model_calls_per_task: int = Field(default=150, ge=1, le=150)
+    consultations_per_task: int = Field(default=75, ge=1, le=75)
+    consultations_per_topic: int = Field(default=25, ge=1, le=25)
+    plan_revision_limit: int = Field(default=15, ge=1, le=15)
+    implementation_revision_limit: int = Field(default=15, ge=1, le=15)
     heartbeat_seconds: int = Field(default=120, ge=30, le=120)
     stalled_seconds: int = Field(default=600, ge=300, le=1800)
     renderer_url: str = "http://renderer:8091"
@@ -84,8 +84,8 @@ class Settings(BaseModel):
     default_repo: str = ""
     model: str = ""
     auth_mode: Literal["chatgpt", "api_key"] = "chatgpt"
-    daily_run_limit: int = Field(default=30, ge=1)
-    task_run_limit: int = Field(default=10, ge=1)
+    daily_run_limit: int = Field(default=150, ge=1)
+    task_run_limit: int = Field(default=50, ge=1)
     daily_budget_usd: float = 0
     task_budget_usd: float = 0
     # Reservation is conservatively charged even if a run fails; no invented exact dollar usage.

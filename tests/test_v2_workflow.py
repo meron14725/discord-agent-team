@@ -253,13 +253,13 @@ def test_plan_review_requests_at_most_three_revision_rounds(team):
 def test_v2_budget_reservations_are_strict_and_persistent(team):
     db, service = service_for(team)
     task_id = create_v2(db, service)
-    for _ in range(30):
+    for _ in range(150):
         service.reserve_model_call(task_id)
     with pytest.raises(GuardError, match="model-call"):
         service.reserve_model_call(task_id)
     with db.transaction() as session:
         budget = session.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task_id))
-        assert budget.model_reservations == 30
+        assert budget.model_reservations == 150
 
 
 def test_v2_task_creation_does_not_change_v1_default(team):
@@ -503,7 +503,7 @@ def test_v2_read_only_jobs_run_four_at_once_even_with_subscription_auth(team):
     settings.workflow_v2.repository_aliases = ["demo"]
     workflow = WorkflowV2Service(db, settings)
     with db.transaction() as session:
-        for number in range(5):
+        for number in range(25):
             workflow.create_task(
                 session,
                 task_id=f"TASK-PARALLEL-{number}",
@@ -540,7 +540,7 @@ def test_v2_repository_write_jobs_are_serialized_per_repository(team):
         assert session.scalar(select(func.count()).select_from(RepositoryLease)) == 1
 
 
-def test_internal_advisor_is_limited_to_five_calls_per_immutable_topic(team):
+def test_internal_advisor_is_limited_to_twenty_five_calls_per_immutable_topic(team):
     settings, db, _, _, _, _ = team
     settings.workflow_v2.enabled = True
     settings.workflow_v2.repository_aliases = ["demo"]
@@ -562,7 +562,7 @@ def test_internal_advisor_is_limited_to_five_calls_per_immutable_topic(team):
         )
         topic_id = topic.topic_id
     advisors = ConsultationService(db, settings)
-    for number in range(5):
+    for number in range(25):
         advisors.request(
             "TASK-CONSULT",
             topic_id=topic_id,
@@ -586,7 +586,7 @@ def test_internal_advisor_is_limited_to_five_calls_per_immutable_topic(team):
                 .order_by(Consultation.ordinal)
             )
         )
-        assert [record.ordinal for record in records] == [1, 2, 3, 4, 5]
+        assert [record.ordinal for record in records] == list(range(1, 26))
         assert all(record.consultant_role == "analyst" for record in records)
     assert not settings.discord_role_enabled("analyst")
 
@@ -874,3 +874,30 @@ def test_plan_review_uses_filtered_snapshot_instead_of_decoding_binary_files(tea
     monkeypatch.setattr(github, 'source_context', lambda *args: snapshot)
     step(engine)
     assert service.status(task['id'])['state'] == 'AwaitingPlanApproval'
+
+
+def test_budget_retry_preserves_usage_and_rejects_unchanged_limit_or_stale_context(team):
+    settings, db, _, service, engine, command = team
+    _, workflow = service_for(team)
+    task_id = create_v2(db, workflow)
+    settings.workflow_v2.model_calls_per_task = 30
+    with db.transaction() as session:
+        budget = session.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task_id))
+        budget.model_reservations = 30
+    assert engine.claim() is None
+    assert service.status(task_id)['state'] == 'Blocked'
+    with pytest.raises(GuardError, match='未解消'):
+        command('retry', task_id=task_id)
+    settings.workflow_v2.model_calls_per_task = 150
+    with db.transaction() as session:
+        task = session.get(Task, task_id)
+        saved = dict(task.data)
+        task.data = {**saved, 'requirements_hash': 'changed'}
+    with pytest.raises(GuardError, match='stale context'):
+        command('retry', task_id=task_id)
+    with db.transaction() as session:
+        session.get(Task, task_id).data = saved
+    assert command('retry', task_id=task_id)['state'] == 'DraftingRequirements'
+    assert engine.claim() is not None
+    with db.transaction() as session:
+        assert session.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task_id)).model_reservations == 31

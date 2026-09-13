@@ -35,6 +35,7 @@ natural_language_requests: false # true: allowed owners' new general messages be
 coordination_timeout: 300
 specialist_concurrency: 1
 specialist_retry_attempts: 3
+specialist_continuation_limit: 2
 specialist_urls: {}
 role_registry:
   entries:

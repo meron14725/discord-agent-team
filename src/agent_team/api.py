@@ -26,7 +26,7 @@ from .contracts import (
     RunRequest,
     SpecialistRole,
 )
-from .coordination import validate_specialist_handoffs
+from .coordination import bound_specialist_continuation, validate_specialist_handoffs
 from .db import (
     Artifact,
     Database,
@@ -84,6 +84,7 @@ class SpecialistCommand(CoordinateCommand):
     handoff_round: int = Field(default=0, ge=0, le=2)
     handoff_source_roles: list[SpecialistRole] = Field(default_factory=list, max_length=2)
     visited_roles: list[SpecialistRole] = Field(default_factory=list, max_length=10)
+    continuation_turn: int = Field(default=0, ge=0, le=3)
 
     @model_validator(mode="after")
     def handoff_state_matches_depth(self):
@@ -414,6 +415,20 @@ def create_app(db=None, settings=None, token=None):
                             "visited_roles": sorted(set(command.visited_roles) | {command.role}),
                             "maximum_targets": 2,
                         },
+                        "continuation_policy": {
+                            "used": command.continuation_turn,
+                            "limit": settings.specialist_continuation_limit,
+                            "remaining": max(
+                                0,
+                                settings.specialist_continuation_limit
+                                - command.continuation_turn,
+                            ),
+                            "allowed": (
+                                command.handoff_depth != 2
+                                and command.continuation_turn
+                                < settings.specialist_continuation_limit
+                            ),
+                        },
                         "available_roles": enabled_roles,
                         "discord_change_plan_required": (
                             canonical_role == "security_sre"
@@ -459,6 +474,12 @@ def create_app(db=None, settings=None, token=None):
                 decision.action != "request_approval" or decision.sre_plan is None
             ):
                 raise GuardError("SRE omitted the required typed Discord change plan")
+            decision = bound_specialist_continuation(
+                decision,
+                handoff_depth=command.handoff_depth,
+                continuation_turn=command.continuation_turn,
+                continuation_limit=settings.specialist_continuation_limit,
+            )
             if decision.sre_plan is not None:
                 if canonical_role != "security_sre":
                     raise GuardError("Discord SRE plans are restricted to the SRE role")
@@ -598,7 +619,14 @@ def create_app(db=None, settings=None, token=None):
             if out is None:
                 raise HTTPException(404)
             out.sent = True
-            out.data = {**out.data, "message_id": str(payload["message_id"])}
+            message_ids = [str(value) for value in payload.get("message_ids", [])]
+            if not message_ids:
+                message_ids = [str(payload["message_id"])]
+            out.data = {
+                **out.data,
+                "message_id": str(payload["message_id"]),
+                "message_ids": message_ids,
+            }
             if out.data.get("project_status"):
                 task = task_lock(s, out.task_id)
                 workspace = s.scalar(

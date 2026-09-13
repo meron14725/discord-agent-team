@@ -15,6 +15,7 @@ from .db import (
     task_lock,
     uid,
 )
+from .discord_delivery import task_next_step, task_waits_for_owner
 from .policy import GuardError
 from .workflow import WorkflowV2Service
 
@@ -22,6 +23,11 @@ STOPPED = {"Paused", "Blocked", "Cancelled", "Merged"}
 
 
 def notify(s, task, body, role="upstream", **extra):
+    extra = {
+        "next_action": task_next_step(task.state),
+        "mention_owner": task_waits_for_owner(task.state),
+        **extra,
+    }
     if task.workflow_version == 2 and task.data.get("project_channel_id"):
         extra = {
             "project_status": True,

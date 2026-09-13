@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from agent_team.contracts import SpecialistDecision
 from agent_team.coordination import (
+    bound_specialist_continuation,
     resolve_specialist_handoffs,
     validate_specialist_handoffs,
 )
@@ -15,6 +16,7 @@ def handoff(target, *, reason="追加調査が必要", instruction="対象を調
         reply=f"{target}へ確認を引き継ぎます。",
         task_summary="",
         approval_reason="",
+        continuation_instruction="",
         sre_plan=None,
         handoffs=[{"role": target, "reason": reason, "instruction": instruction}],
     )
@@ -26,6 +28,7 @@ def test_handoff_contract_requires_handoff_action_and_unique_targets():
         "reply": "確認します。",
         "task_summary": "",
         "approval_reason": "",
+        "continuation_instruction": "",
         "sre_plan": None,
         "handoffs": [
             {"role": "downstream", "reason": "実装確認", "instruction": "コードを確認する"}
@@ -46,6 +49,41 @@ def test_handoff_contract_discards_unused_task_and_approval_text():
     normalized = SpecialistDecision.model_validate(decision.model_dump())
     assert normalized.task_summary == ""
     assert normalized.approval_reason == ""
+
+
+def test_self_continuation_is_bounded_and_becomes_an_owner_question():
+    continuing = SpecialistDecision(
+        action="continue",
+        reply="ログの一次確認が終わりました。",
+        task_summary="",
+        approval_reason="",
+        continuation_instruction="関連イベントを照合する",
+        sre_plan=None,
+        handoffs=[],
+    )
+
+    allowed = bound_specialist_continuation(
+        continuing,
+        handoff_depth=0,
+        continuation_turn=1,
+        continuation_limit=2,
+    )
+    stopped = bound_specialist_continuation(
+        continuing,
+        handoff_depth=0,
+        continuation_turn=2,
+        continuation_limit=2,
+    )
+    peer_answer = bound_specialist_continuation(
+        continuing,
+        handoff_depth=2,
+        continuation_turn=0,
+        continuation_limit=2,
+    )
+
+    assert allowed.action == "continue"
+    assert stopped.action == "clarify" and stopped.continuation_instruction == ""
+    assert peer_answer.action == "reply" and peer_answer.continuation_instruction == ""
 
 
 def test_control_layer_rejects_self_and_duplicate_initial_handoffs():

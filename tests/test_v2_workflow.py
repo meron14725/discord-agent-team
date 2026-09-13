@@ -393,8 +393,11 @@ def test_v2_outbox_projects_one_status_message_and_topic_thread(team):
         "requirements.png",
     }
     assert status["channel_id"] == topic["channel_id"] == "123456789012345678"
+    assert status["next_action"] == "現在の担当が自動継続"
     assert client.post(
-        f"/outbox/{status['id']}/ack", json={"message_id": "status-1"}, headers=headers
+        f"/outbox/{status['id']}/ack",
+        json={"message_id": "status-1", "message_ids": ["status-1", "status-2"]},
+        headers=headers,
     ).is_success
     assert client.post(
         f"/outbox/{topic['id']}/ack",
@@ -404,6 +407,8 @@ def test_v2_outbox_projects_one_status_message_and_topic_thread(team):
     with db.transaction() as session:
         assert session.scalar(select(func.count()).select_from(ProjectWorkspace)) == 1
         assert session.scalar(select(TaskProjection).where(TaskProjection.task_id == task["id"]))
+        saved_status = session.get(Outbox, status["id"])
+        assert saved_status.data["message_ids"] == ["status-1", "status-2"]
         saved_topic = session.scalar(select(TopicThread).where(TopicThread.task_id == task["id"]))
         assert saved_topic.thread_id == "thread-1"
         assert "thread-1" in session.get(Task, task["id"]).data["topic_thread_ids"]

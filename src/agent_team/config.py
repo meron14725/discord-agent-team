@@ -102,6 +102,7 @@ class Settings(BaseModel):
     coordination_timeout: int = Field(default=300, ge=30, le=600)
     specialist_concurrency: int = Field(default=1, ge=1, le=4)
     specialist_retry_attempts: int = Field(default=3, ge=1, le=3)
+    specialist_continuation_limit: int = Field(default=2, ge=1, le=3)
     coordinator_url: str = "http://coordinator-worker:8090"
     specialist_url: str = "http://specialist-worker:8090"
     role_registry: RoleRegistry = Field(default_factory=default_role_registry)

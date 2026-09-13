@@ -12,6 +12,7 @@ from discord import app_commands
 from ..config import load_settings, secret
 from ..contracts import SpecialistDecision
 from ..coordination import resolve_specialist_handoffs
+from ..discord_delivery import discord_parts, specialist_next_step
 from ..redaction import SecretScanner
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,35 @@ def owner_message_links(text: str, guild_id: str, limit: int = 3) -> list[tuple[
         if len(links) == limit:
             break
     return links
+
+
+async def send_chunked(
+    channel,
+    text: str,
+    *,
+    event_id: str,
+    bot_user_id: int | None = None,
+    first_kwargs: dict | None = None,
+):
+    """Send every deterministic part once and return messages in content order."""
+    parts = discord_parts(text, event_id)
+    existing_by_marker = {}
+    if bot_user_id is not None:
+        async for candidate in channel.history(limit=100):
+            if candidate.author.id != bot_user_id:
+                continue
+            for part in parts:
+                if part.marker in candidate.content:
+                    existing_by_marker[part.marker] = candidate
+    posted = []
+    for part in parts:
+        message = existing_by_marker.get(part.marker)
+        if message is None:
+            kwargs = dict(first_kwargs or {}) if part.index == 1 else {}
+            kwargs.setdefault("allowed_mentions", discord.AllowedMentions.none())
+            message = await channel.send(part.content, **kwargs)
+        posted.append(message)
+    return posted
 
 
 async def serve():
@@ -555,7 +585,7 @@ async def serve():
                                 await message.channel.send(
                                     (
                                         f"<@{coordinator.user.id}> → <@{target_user.id}> 依頼\n"
-                                        f"{delegated['instruction'][:1400]}"
+                                        f"{delegated['instruction']}"
                                     ),
                                     allowed_mentions=discord.AllowedMentions(users=[target_user]),
                                 )
@@ -569,6 +599,7 @@ async def serve():
                             visited_roles=None,
                             handoff_context="",
                             allow_fallback=True,
+                            continuation_turn=0,
                         ):
                             bot = bots[delegated["role"]]
                             try:
@@ -588,7 +619,8 @@ async def serve():
                                             json={
                                                 "event_id": (
                                                     f"{message.id}-{delegated['role']}-"
-                                                    f"{handoff_depth}-{handoff_round}-{attempt}"
+                                                    f"{handoff_depth}-{handoff_round}-"
+                                                    f"{continuation_turn}-{attempt}"
                                                 ),
                                                 "actor": str(message.author.id),
                                                 "guild": str(message.guild.id),
@@ -601,6 +633,7 @@ async def serve():
                                                 "handoff_round": handoff_round,
                                                 "handoff_source_roles": handoff_source_roles or [],
                                                 "visited_roles": visited_roles or initial_roles,
+                                                "continuation_turn": continuation_turn,
                                                 "discord_snapshot": (
                                                     await sre_platform_snapshot(message.guild.id)
                                                     if delegated["role"] == "sre"
@@ -668,21 +701,59 @@ async def serve():
                                 specialist_decision = SpecialistDecision.model_validate(
                                     specialist.json()
                                 )
-                                await channel.send(
-                                    (
-                                        f"<@{coordinator.user.id}> {specialist_decision.reply}"
-                                        if coordinator.user is not None
-                                        else specialist_decision.reply
+                                attention_user = None
+                                if specialist_decision.action in {"clarify", "request_approval"}:
+                                    attention_user = discord.Object(id=int(settings.owner_ids[0]))
+                                elif coordinator.user is not None:
+                                    attention_user = coordinator.user
+                                attention = (
+                                    f"<@{attention_user.id}> " if attention_user is not None else ""
+                                )
+                                next_step = specialist_next_step(
+                                    specialist_decision,
+                                    owner_mention=(
+                                        f"<@{settings.owner_ids[0]}>"
+                                        if settings.owner_ids
+                                        else "オーナー"
                                     ),
-                                    allowed_mentions=(
-                                        discord.AllowedMentions(users=[coordinator.user])
-                                        if coordinator.user is not None
-                                        else discord.AllowedMentions.none()
+                                    continuation_turn=continuation_turn,
+                                    continuation_limit=settings.specialist_continuation_limit,
+                                )
+                                await send_chunked(
+                                    channel,
+                                    f"{attention}{specialist_decision.reply}\n\n{next_step}",
+                                    event_id=(
+                                        f"chat-{message.id}-{delegated['role']}-"
+                                        f"{handoff_depth}-{handoff_round}-{continuation_turn}"
                                     ),
+                                    bot_user_id=bot.user.id if bot.user is not None else None,
+                                    first_kwargs={
+                                        "allowed_mentions": (
+                                            discord.AllowedMentions(users=[attention_user])
+                                            if attention_user is not None
+                                            else discord.AllowedMentions.none()
+                                        )
+                                    },
                                 )
                                 if delegated["role"] == "sre" and specialist_decision.sre_plan:
                                     await propose_sre_change(
                                         message, specialist_decision.model_dump(mode="json")
+                                    )
+                                if specialist_decision.action == "continue":
+                                    return await specialist_turn(
+                                        {
+                                            "role": delegated["role"],
+                                            "instruction": specialist_decision.continuation_instruction,
+                                        },
+                                        handoff_depth=handoff_depth,
+                                        handoff_round=handoff_round,
+                                        handoff_source_roles=handoff_source_roles,
+                                        visited_roles=visited_roles,
+                                        handoff_context=(
+                                            f"直前の自分の回答: {specialist_decision.reply}"
+                                        ),
+                                        allow_fallback=allow_fallback,
+                                        continuation_turn=continuation_turn + 1,
                                     )
                                 return delegated["role"], specialist_decision
                             except Exception:
@@ -693,6 +764,44 @@ async def serve():
                             *(specialist_turn(delegated) for delegated in decision["delegations"])
                         )
                         completed = [result for result in initial_results if result is not None]
+                        recommendations = [
+                            (role, result.task_summary)
+                            for role, result in completed
+                            if result.action == "recommend_task"
+                        ]
+                        if recommendations:
+                            combined_summary = "\n".join(
+                                f"{role}: {summary}" for role, summary in recommendations
+                            )
+                            registered = await api.post(
+                                "/commands",
+                                json={
+                                    "action": "request",
+                                    "event_id": f"{message.id}-specialist-recommendation",
+                                    "actor": str(message.author.id),
+                                    "guild": str(message.guild.id),
+                                    "channel": str(message.channel.id),
+                                    "repo": next(
+                                        (
+                                            alias
+                                            for alias, channel_id in project_channels.items()
+                                            if channel_id == str(message.channel.id)
+                                        ),
+                                        settings.default_repo,
+                                    ),
+                                    "text": combined_summary,
+                                },
+                            )
+                            if registered.is_error:
+                                log.warning(
+                                    "Specialist task recommendation rejected: HTTP %s",
+                                    registered.status_code,
+                                )
+                                owner = discord.Object(id=int(settings.owner_ids[0]))
+                                await message.channel.send(
+                                    f"<@{owner.id}> 正式案件への登録に失敗しました。次: オーナーの再指示待ち",
+                                    allowed_mentions=discord.AllowedMentions(users=[owner]),
+                                )
                         followups = resolve_specialist_handoffs(initial_roles, completed)
                         if followups:
                             all_visited = [
@@ -810,20 +919,27 @@ async def serve():
                                 owner = discord.Object(id=int(settings.owner_ids[0]))
                                 mention = f"<@{owner.id}> "
                                 allowed = discord.AllowedMentions(users=[owner])
-                            posted = await thread.send(
-                                f"{mention}{item['body'][:1700]}\n{marker}",
-                                allowed_mentions=allowed,
+                            posted_parts = await send_chunked(
+                                thread,
+                                f"{mention}{item['body']}",
+                                event_id=item["id"],
+                                bot_user_id=(
+                                    coordinator.user.id if coordinator.user is not None else None
+                                ),
+                                first_kwargs={"allowed_mentions": allowed},
                             )
                             await api.post(
                                 f"/outbox/{item['id']}/ack",
                                 json={
-                                    "message_id": str(posted.id),
+                                    "message_id": str(posted_parts[0].id),
+                                    "message_ids": [str(part.id) for part in posted_parts],
                                     "thread_id": str(thread.id),
                                 },
                             )
                             continue
                         if item.get("project_status"):
                             channel = await coordinator.fetch_channel(int(item["channel_id"]))
+                            posted_parts = None
                             view = None
                             owner_mentions = discord.AllowedMentions.none()
                             mention = ""
@@ -854,9 +970,10 @@ async def serve():
                                 owner = discord.Object(id=int(settings.owner_ids[0]))
                                 mention = f"<@{owner.id}> "
                                 owner_mentions = discord.AllowedMentions(users=[owner])
-                            body = (
-                                f"{mention}**{item['task_id']}**\n{item['body'][:1500]}\n{marker}"
-                            )
+                            body = f"{mention}**{item['task_id']}**\n{item['body']}"
+                            if item.get("next_action"):
+                                body += f"\n次: {item['next_action']}"
+                            parts = discord_parts(body, item["id"])
                             files = [
                                 discord.File(
                                     io.BytesIO(base64.b64decode(attachment["content_base64"])),
@@ -868,7 +985,7 @@ async def serve():
                             # Discord does not notify users when a mention is added by editing
                             # an existing message. Owner-attention notices therefore need a
                             # fresh message instead of reusing the project status message.
-                            if item.get("status_message_id") and not (
+                            if len(parts) == 1 and item.get("status_message_id") and not (
                                 item.get("approval") or item.get("mention_owner")
                             ):
                                 try:
@@ -878,22 +995,37 @@ async def serve():
                                 except discord.NotFound:
                                     existing = None
                             if existing is None:
-                                existing = await channel.send(
+                                posted_parts = await send_chunked(
+                                    channel,
                                     body,
-                                    view=view,
-                                    allowed_mentions=owner_mentions,
-                                    files=files,
+                                    event_id=item["id"],
+                                    bot_user_id=(
+                                        coordinator.user.id if coordinator.user is not None else None
+                                    ),
+                                    first_kwargs={
+                                        "view": view,
+                                        "allowed_mentions": owner_mentions,
+                                        "files": files,
+                                    },
                                 )
+                                existing = posted_parts[0]
                             else:
                                 await existing.edit(
-                                    content=body,
+                                    content=parts[0].content,
                                     view=view,
                                     allowed_mentions=owner_mentions,
                                     attachments=files,
                                 )
                             await api.post(
                                 f"/outbox/{item['id']}/ack",
-                                json={"message_id": str(existing.id)},
+                                json={
+                                    "message_id": str(existing.id),
+                                    "message_ids": (
+                                        [str(part.id) for part in posted_parts]
+                                        if posted_parts is not None
+                                        else [str(existing.id)]
+                                    ),
+                                },
                             )
                             continue
                         if item.get("create_thread"):
@@ -906,55 +1038,74 @@ async def serve():
                             if message is None:
                                 message = await channel.send(f"{item['task_id']}\n{marker}")
                             thread = message.thread or await message.create_thread(name=item["task_id"])
-                            await thread.send(item["body"][:1800])
+                            body_parts = await send_chunked(
+                                thread,
+                                item["body"],
+                                event_id=item["id"] + "-body",
+                                bot_user_id=(
+                                    coordinator.user.id if coordinator.user is not None else None
+                                ),
+                            )
                             await api.post(
                                 f"/outbox/{item['id']}/ack",
-                                json={"message_id": str(message.id), "thread_id": str(thread.id)},
+                                json={
+                                    "message_id": str(message.id),
+                                    "message_ids": [str(part.id) for part in body_parts],
+                                    "thread_id": str(thread.id),
+                                },
                             )
                             continue
                         if not item.get("thread_id"):
                             continue
                         channel = await bot.fetch_channel(int(item["thread_id"]))
-                        existing = None
-                        async for candidate in channel.history(limit=100):
-                            if candidate.author.id == bot.user.id and marker in candidate.content:
-                                existing = candidate
-                                break
-                        if existing is None:
-                            kwargs = {}
-                            body_prefix = ""
-                            if item.get("mention_owner") and settings.owner_ids:
-                                owner = discord.Object(id=int(settings.owner_ids[0]))
-                                body_prefix = f"<@{owner.id}> "
-                                kwargs["allowed_mentions"] = discord.AllowedMentions(users=[owner])
-                            if item.get("delegation_log"):
-                                target_bot = role_clients.get(item["target_role"])
-                                if target_bot and target_bot.user:
-                                    body_prefix = f"<@{target_bot.user.id}> "
-                                    kwargs["allowed_mentions"] = discord.AllowedMentions(
-                                        users=[target_bot.user]
-                                    )
-                            if item.get("approval"):
-                                view = discord.ui.View(timeout=None)
-                                view.add_item(
-                                    discord.ui.Button(
-                                        label="仕様を承認"
-                                        if item["approval"] == "spec"
-                                        else "このSHAのマージを承認",
-                                        custom_id="team:" + item["id"],
-                                        style=discord.ButtonStyle.success,
-                                    )
+                        kwargs = {}
+                        body_prefix = ""
+                        if item.get("mention_owner") and settings.owner_ids:
+                            owner = discord.Object(id=int(settings.owner_ids[0]))
+                            body_prefix = f"<@{owner.id}> "
+                            kwargs["allowed_mentions"] = discord.AllowedMentions(users=[owner])
+                        if item.get("delegation_log"):
+                            target_bot = role_clients.get(item["target_role"])
+                            if target_bot and target_bot.user:
+                                body_prefix = f"<@{target_bot.user.id}> "
+                                kwargs["allowed_mentions"] = discord.AllowedMentions(
+                                    users=[target_bot.user]
                                 )
-                                kwargs["view"] = view
-                            if item.get("spec"):
-                                kwargs["file"] = discord.File(
-                                    io.BytesIO(item["spec"].encode()), filename="spec.md"
+                        if item.get("approval"):
+                            view = discord.ui.View(timeout=None)
+                            view.add_item(
+                                discord.ui.Button(
+                                    label="仕様を承認"
+                                    if item["approval"] == "spec"
+                                    else "このSHAのマージを承認",
+                                    custom_id="team:" + item["id"],
+                                    style=discord.ButtonStyle.success,
                                 )
-                            body = body_prefix + item["body"][:1500]
-                            if item.get("head_sha"):
-                                body += "\nhead: " + item["head_sha"]
-                            existing = await channel.send(body + "\n" + marker, **kwargs)
-                        await api.post(f"/outbox/{item['id']}/ack", json={"message_id": str(existing.id)})
+                            )
+                            kwargs["view"] = view
+                        if item.get("spec"):
+                            kwargs["file"] = discord.File(
+                                io.BytesIO(item["spec"].encode()), filename="spec.md"
+                            )
+                        body = body_prefix + item["body"]
+                        if item.get("head_sha"):
+                            body += "\nhead: " + item["head_sha"]
+                        if item.get("next_action"):
+                            body += "\n次: " + item["next_action"]
+                        posted_parts = await send_chunked(
+                            channel,
+                            body,
+                            event_id=item["id"],
+                            bot_user_id=bot.user.id if bot.user is not None else None,
+                            first_kwargs=kwargs,
+                        )
+                        await api.post(
+                            f"/outbox/{item['id']}/ack",
+                            json={
+                                "message_id": str(posted_parts[0].id),
+                                "message_ids": [str(part.id) for part in posted_parts],
+                            },
+                        )
                     except Exception:
                         log.warning("Notification failed: %s", item["id"], exc_info=True)
                         await api.post(f"/outbox/{item['id']}/fail")

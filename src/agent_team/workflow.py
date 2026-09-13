@@ -18,6 +18,7 @@ from .db import (
     uid,
 )
 from .delegations import DelegationService
+from .discord_delivery import task_next_step, task_waits_for_owner
 from .planning import validate_plan, validate_review_coverage
 from .policy import GuardError
 from .requirements import bind_requirements
@@ -40,6 +41,11 @@ V2_ACTIVE_STATES = {
 
 
 def _notify(session, task, body, role="coordinator", **extra):
+    extra = {
+        "next_action": task_next_step(task.state),
+        "mention_owner": task_waits_for_owner(task.state),
+        **extra,
+    }
     if task.workflow_version == 2 and task.data.get("project_channel_id"):
         extra = {
             "project_status": True,

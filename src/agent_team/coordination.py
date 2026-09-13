@@ -12,6 +12,32 @@ class HandoffDispatch:
     context: str
 
 
+def bound_specialist_continuation(
+    decision: SpecialistDecision,
+    *,
+    handoff_depth: int,
+    continuation_turn: int,
+    continuation_limit: int,
+) -> SpecialistDecision:
+    if decision.action != "continue":
+        return decision
+    if handoff_depth == 2:
+        return decision.model_copy(
+            update={
+                "action": "reply",
+                "continuation_instruction": "",
+            }
+        )
+    if continuation_turn >= continuation_limit:
+        return decision.model_copy(
+            update={
+                "action": "clarify",
+                "continuation_instruction": "",
+            }
+        )
+    return decision
+
+
 def validate_specialist_handoffs(
     decision: SpecialistDecision,
     *,

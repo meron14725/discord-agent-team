@@ -54,7 +54,9 @@ class SpecialistHandoff(Strict):
 
 
 class SpecialistDecision(Strict):
-    action: Literal["reply", "clarify", "recommend_task", "request_approval", "handoff"]
+    action: Literal[
+        "reply", "clarify", "continue", "recommend_task", "request_approval", "handoff"
+    ]
     reply: str = Field(min_length=1, max_length=1500)
     task_summary: str = Field(
         max_length=2000,
@@ -63,6 +65,10 @@ class SpecialistDecision(Strict):
     approval_reason: str = Field(
         max_length=1500,
         description="Required for request_approval; ignored and normalized to empty otherwise",
+    )
+    continuation_instruction: str = Field(
+        max_length=1500,
+        description="Required for continue; ignored and normalized to empty otherwise",
     )
     sre_plan: "DiscordSREPlan | None"
     handoffs: list[SpecialistHandoff] = Field(max_length=2)
@@ -77,6 +83,10 @@ class SpecialistDecision(Strict):
             raise ValueError("Approval requests require a reason")
         if self.action != "request_approval":
             self.approval_reason = ""
+        if self.action == "continue" and not self.continuation_instruction.strip():
+            raise ValueError("Self-continuation requires a concrete next instruction")
+        if self.action != "continue":
+            self.continuation_instruction = ""
         if self.sre_plan is not None and self.action != "request_approval":
             raise ValueError("Discord SRE plans require an approval request")
         if (self.action == "handoff") != bool(self.handoffs):

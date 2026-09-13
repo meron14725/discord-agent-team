@@ -719,14 +719,7 @@ async def serve():
                                 "actor": str(message.author.id),
                                 "guild": str(message.guild.id),
                                 "channel": str(message.channel.id),
-                                "repo": next(
-                                    (
-                                        alias
-                                        for alias, channel_id in project_channels.items()
-                                        if channel_id == str(message.channel.id)
-                                    ),
-                                    settings.default_repo,
-                                ),
+                                "repo": decision["repository_alias"],
                                 "text": decision["task_summary"],
                             },
                         )
@@ -928,6 +921,12 @@ async def serve():
                             for role, result in completed
                             if result.action == "recommend_task"
                         ]
+                        if recommendations and not decision.get("repository_alias"):
+                            await message.channel.send(
+                                "正式案件にする前に、変更対象のリポジトリを教えてください。",
+                                allowed_mentions=discord.AllowedMentions.none(),
+                            )
+                            recommendations = []
                         if recommendations:
                             combined_summary = "\n".join(
                                 f"{role}: {summary}" for role, summary in recommendations
@@ -940,14 +939,7 @@ async def serve():
                                     "actor": str(message.author.id),
                                     "guild": str(message.guild.id),
                                     "channel": str(message.channel.id),
-                                    "repo": next(
-                                        (
-                                            alias
-                                            for alias, channel_id in project_channels.items()
-                                            if channel_id == str(message.channel.id)
-                                        ),
-                                        settings.default_repo,
-                                    ),
+                                    "repo": decision["repository_alias"],
                                     "text": combined_summary,
                                 },
                             )

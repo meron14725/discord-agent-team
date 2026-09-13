@@ -56,3 +56,15 @@ docker compose -f compose.yaml -f compose.optional-bots.yaml \
 ```
 
 その役の通常応答、全員宛て応答、3回接続失敗、Bot投稿を命令として再処理しないことを確認してから次の役を有効にする。通常処理は最大4件、同じrepositoryの書き込みは1件、SRE特権操作は1件である。
+
+## 正式案件のリポジトリ選択
+
+統括へ `repos` の alias、repository、description、per_task を渡し、
+`repository_alias` を選択させる。既定aliasやgeneralのチャンネル割当だけで新規repoを作らない。
+未指定は対象確認へ戻し、台帳外のaliasは拒否する。専門家からの案件提案にも同じ選択結果を使う。
+
+運用設定では `discord-agent-team` を既存基盤の改修先として登録する。
+`per_task: false`、`repository: meron14725/discord-agent-team` とし、
+Botの人格・会話・統括・連携・運用の改善をdescriptionに記載する。
+新しい独立案件だけ `project`（per_task: true）を使う。
+基盤へのルーティングは実装・マージ・権限変更の承認を兼ねない。

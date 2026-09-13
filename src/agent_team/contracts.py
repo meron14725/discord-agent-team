@@ -183,6 +183,7 @@ class DiscordSREPlan(Strict):
 
 
 class CoordinationDecision(Strict):
+    repository_alias: str = Field(default="", max_length=100)
     action: Literal["reply", "delegate", "task", "clarify"]
     reply: str = Field(min_length=1, max_length=1500)
     task_summary: str = Field(max_length=2000)

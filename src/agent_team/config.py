@@ -15,6 +15,7 @@ class Check(BaseModel):
 
 
 class Repo(BaseModel):
+    description: str = ""
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     base: str = "master"
     per_task: bool = False

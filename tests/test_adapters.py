@@ -569,3 +569,27 @@ def test_coordinator_selects_allowlisted_repository_without_default_fallback(
         assert response.status_code == 200
         assert response.json()["action"] == expected_action
         assert response.json()["repository_alias"] == alias
+
+
+def test_github_changed_file_read_does_not_decode_unrelated_binary(team, monkeypatch):
+    import base64
+
+    settings, *_ = team
+    github = GitHub(settings, {'publisher': 'test-token'})
+    calls = []
+
+    def api(repo, method, path, **kwargs):
+        calls.append(path)
+        if path.startswith('git/trees/'):
+            return {'truncated': False, 'tree': [
+                {'path': 'docs/image.png', 'type': 'blob', 'mode': '100644', 'sha': 'binary'},
+                {'path': 'docs/work-items/issue-5/plans/v1.md', 'type': 'blob', 'mode': '100644', 'sha': 'plan'},
+            ]}
+        if path == 'git/blobs/plan':
+            return {'content': base64.b64encode(b'# Plan').decode()}
+        raise AssertionError('Unrelated binary must not be fetched')
+
+    monkeypatch.setattr(github, 'api', api)
+    selected = 'docs/work-items/issue-5/plans/v1.md'
+    assert github.source(settings.repos['demo'], 'a' * 40, paths={selected}) == {selected: '# Plan'}
+    assert 'git/blobs/binary' not in calls

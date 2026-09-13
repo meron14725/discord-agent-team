@@ -103,13 +103,15 @@ class GitHub:
                 time.sleep(min(2**attempt, 4))
         raise AssertionError("unreachable")
 
-    def source(self, repo, sha):
+    def source(self, repo, sha, *, paths=None):
         tree = self.api(repo, "GET", f"git/trees/{sha}?recursive=1")
         if tree.get("truncated"):
             raise GuardError("Truncated repository tree")
         files, total = {}, 0
         for entry in tree["tree"]:
             if entry["type"] == "tree":
+                continue
+            if paths is not None and entry["path"] not in paths:
                 continue
             safe_path(entry["path"])
             if entry["mode"] not in {"100644", "100755"}:
@@ -392,7 +394,7 @@ class GitHub:
         changed = self.pages(repo, f"pulls/{d['pr']}/files")
         if len(changed) != pr["changed_files"]:
             raise GuardError("Incomplete PR file listing")
-        source = self.source(repo, head)
+        source = self.source(repo, head, paths={f["filename"] for f in changed})
         files = {f["filename"]: source.get(f["filename"]) for f in changed}
         checks = self.pages(repo, f"commits/{head}/check-runs?filter=latest", role="reviewer")
         reviews = self.pages(repo, f"pulls/{d['pr']}/reviews")

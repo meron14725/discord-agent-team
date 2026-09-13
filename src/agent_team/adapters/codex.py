@@ -76,6 +76,19 @@ def codex_output_schema() -> dict:
 
 
 class RemoteRunner:
+    def v2_available(self):
+        try:
+            response = httpx.get(self.settings.workflow_v2.worker_url + "/health",
+                                 headers=self.headers, timeout=5)
+            response.raise_for_status()
+            status = response.json()
+            return (status.get("status") == "ok" and status.get("role") == "v2"
+                    and isinstance(status.get("active"), int)
+                    and isinstance(status.get("capacity"), int)
+                    and 0 <= status["active"] < status["capacity"])
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return False
+
     def __init__(self, settings, token=""):
         self.settings = settings
         self.headers = {"Authorization": "Bearer " + token} if token else {}

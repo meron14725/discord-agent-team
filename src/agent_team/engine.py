@@ -1233,6 +1233,7 @@ class Engine:
 
     def reconcile(self):
         self.db.check_leader()
+        self.recover_connected_v2_workers()
         self.recover_after_runtime_change()
         self.recover_invalid_spec_finding()
         self.report_slow_v2_starts()
@@ -1574,6 +1575,37 @@ class Engine:
                     operation = session.get(Operation, operation_id)
                     operation.status = "done"
                     operation.data = {**operation.data, "attempts": operation.data.get("attempts", 0) + 1}
+
+    def recover_connected_v2_workers(self):
+        """Retry a connection failure once after an authenticated healthy response."""
+        available = getattr(self.runner, "v2_available", None)
+        if available is None:
+            return
+        with self.db.transaction() as s:
+            for task in s.scalars(select(Task).where(
+                Task.workflow_version == 2, Task.state == "Blocked"
+            ).with_for_update()):
+                if not task.data.get("reason", "").startswith("ConnectError:"):
+                    continue
+                job = s.scalar(select(Job).where(Job.task_id == task.id).order_by(Job.created.desc()))
+                if (job is None or job.status != "failed" or job.data.get("connection_recovery")
+                    or job.data.get("response") or task.data.get("failed_phase") != "run"
+                    or job.kind not in {"draft_requirements", "plan", "review_plan", "implement", "fix", "review"}
+                    or self.settings.role_registry.role(job.role).parallel_class == "privileged"):
+                    continue
+                if not self.identity_current(task, job):
+                    continue
+                budget = s.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task.id))
+                if budget is None or budget.model_reservations >= self.settings.workflow_v2.model_calls_per_task:
+                    continue
+                if not available():
+                    continue
+                job.data = {**job.data, "connection_recovery": True}
+                job.status, job.attempt, job.owner, job.lease = "queued", 0, "", 0
+                state = {"draft_requirements": "DraftingRequirements", "plan": "PlanningImplementation",
+                         "review_plan": "ReviewingImplementationPlan", "implement": "Queued",
+                         "fix": "Fixing", "review": "Reviewing"}[job.kind]
+                transition(s, task, state, "統括がworkerの復旧を確認し、停止した担当処理を1回再依頼")
 
     def recover_after_runtime_change(self):
         """Requeue only when a missing executable was fixed by trusted configuration."""

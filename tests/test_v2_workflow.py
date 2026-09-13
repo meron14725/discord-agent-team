@@ -968,3 +968,27 @@ def test_reconcile_does_not_restart_requirements_or_stopped_tasks(team, state):
     assert service.status(task_id)['state'] == state
     with db.transaction() as session:
         assert session.scalar(select(func.count()).select_from(Job)) == before
+
+
+@pytest.mark.parametrize('healthy', [False, True])
+def test_connection_recovery_requires_health_and_runs_only_once(team, healthy):
+    import httpx
+
+    settings, db, _, service, engine, _ = team
+    service_for(team)
+    task_id = create_v2(db, service.v2)
+    for _ in range(3):
+        claim = engine.claim()
+        engine.fail(*claim, httpx.ConnectError('unreachable'), phase='run')
+    assert service.status(task_id)['state'] == 'Blocked'
+    engine.runner.v2_available = lambda: healthy
+    engine.recover_connected_v2_workers()
+    if not healthy:
+        assert service.status(task_id)['state'] == 'Blocked'
+        return
+    assert service.status(task_id)['state'] == 'DraftingRequirements'
+    for _ in range(3):
+        engine.fail(*engine.claim(), httpx.ConnectError('again'), phase='run')
+    engine.recover_connected_v2_workers()
+    assert service.status(task_id)['state'] == 'Blocked'
+    assert engine.claim() is None

@@ -155,6 +155,39 @@ def test_v2_requirements_and_plan_have_two_separate_owner_gates(team):
         assert kinds == ["draft_requirements", "plan", "review_plan", "implement"]
 
 
+def test_requirements_button_records_approval_and_starts_planning(team):
+    settings, db, *_ = team
+    _, service = service_for(team)
+    task_id = create_v2(db, service)
+    service.register_requirements(
+        task_id, repository="owner/repo", issue_number=2,
+        issue_url="https://github.com/owner/repo/issues/2",
+        updated_at="2026-09-12T00:00:00Z", body=REQUIREMENTS,
+        explanation_hash="sha256:explanation",
+    )
+    with db.transaction() as session:
+        button_id = next(
+            item.id for item in session.scalars(select(Outbox).where(Outbox.task_id == task_id))
+            if item.data.get("approval") == "requirements"
+        )
+    client = TestClient(create_app(db, settings, "test-token"))
+    payload = {"event_id": "owner-click", "actor": "demo-owner", "guild": "demo-guild",
+               "channel": "demo-channel", "action": "button"}
+    headers = {"Authorization": "Bearer test-token"}
+    denied = client.post(f"/buttons/{button_id}", headers=headers,
+                         json={**payload, "actor": "intruder"})
+    assert denied.status_code == 409
+    response = client.post(f"/buttons/{button_id}", headers=headers, json=payload)
+    assert response.status_code == 200
+    assert response.json()["state"] == "PlanningImplementation"
+    replay = client.post(f"/buttons/{button_id}", headers=headers, json=payload)
+    assert replay.status_code == 200
+    with db.transaction() as session:
+        assert session.scalar(select(func.count()).select_from(ApprovalGrant)) == 1
+        plans = list(session.scalars(select(Job).where(Job.task_id == task_id, Job.kind == "plan")))
+        assert len(plans) == 1
+
+
 def test_v2_rejects_stale_or_unauthorized_approval(team):
     db, service = service_for(team)
     task_id = create_v2(db, service)

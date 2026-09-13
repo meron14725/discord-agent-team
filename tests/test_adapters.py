@@ -529,3 +529,43 @@ def test_subscription_serializes_roles_and_enforces_run_cap(team):
     assert engine.claim() is None
     assert service.status(second["id"])["state"] == "Blocked"
     assert service.status(first["id"])["state"] == "AwaitingSpecApproval"
+
+
+@pytest.mark.parametrize("alias,expected_action", [
+    ("platform", "task"), ("", "clarify"), ("not-allowed", None),
+])
+def test_coordinator_selects_allowlisted_repository_without_default_fallback(
+    team, monkeypatch, alias, expected_action
+):
+    from agent_team.config import Repo
+    from agent_team.contracts import CoordinationDecision
+    settings, db, *_ = team
+    settings.default_repo = "demo"
+    settings.repos["platform"] = Repo(
+        repository="owner/discord-agent-team", description="既存Bot・人格・統括の改善"
+    )
+    original = MockRunner.run
+
+    async def run(self, request):
+        prompt = json.loads(request.prompt)
+        assert prompt["available_repositories"]["platform"]["creates_new_repository"] is False
+        assert "人格" in prompt["available_repositories"]["platform"]["description"]
+        response = await original(self, request)
+        response.result.coordination = CoordinationDecision(
+            action="task", reply="人格を改善します。", task_summary="Bot人格を改善する",
+            delegations=[], repository_alias=alias,
+        )
+        return response
+
+    monkeypatch.setattr(MockRunner, "run", run)
+    client = TestClient(create_app(db, settings, "test-token"))
+    response = client.post("/coordinate", headers={"Authorization": "Bearer test-token"}, json={
+        "event_id": "routing-test", "actor": "demo-owner", "guild": "demo-guild",
+        "channel": "demo-channel", "text": "この会社のBotに人格をつけたい", "history": [],
+    })
+    if expected_action is None:
+        assert response.status_code == 409
+    else:
+        assert response.status_code == 200
+        assert response.json()["action"] == expected_action
+        assert response.json()["repository_alias"] == alias

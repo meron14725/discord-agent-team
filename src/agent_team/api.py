@@ -302,7 +302,15 @@ def create_app(db=None, settings=None, token=None):
                         "current_owner_message": command.text,
                         "recent_discord_context_oldest_first": command.history,
                         "available_roles": enabled_roles,
-                        "default_repository_alias": settings.default_repo,
+                        "available_repositories": {
+                            alias: {"repository": repo.repository, "description": repo.description,
+                                    "creates_new_repository": repo.per_task}
+                            for alias, repo in settings.repos.items()
+                        },
+                        "channel_repository_hints": [
+                            alias for alias, channel in settings.workflow_v2.project_channels.items()
+                            if channel == command.channel and command.channel != settings.channel_id
+                        ],
                         "trusted_company_memory": prompt_context.company_memory,
                         "trusted_company_policy": prompt_context.company_policy,
                         "trusted_role_policies": prompt_context.role_policies,
@@ -325,6 +333,14 @@ def create_app(db=None, settings=None, token=None):
                 command.text,
                 audience,
             )
+            if decision.repository_alias and decision.repository_alias not in settings.repos:
+                raise GuardError("Coordinator selected an unavailable repository")
+            if decision.action == "task" and not decision.repository_alias:
+                decision = CoordinationDecision(
+                    action="clarify",
+                    reply="変更対象のリポジトリを教えてください。新規案件の場合はその旨を教えてください。",
+                    task_summary="", delegations=[], repository_alias="",
+                )
             if not explicitly_addresses_all(command.text) and len(decision.delegations) > 4:
                 raise GuardError("Coordinator may select at most four specialists")
             for delegation in decision.delegations:

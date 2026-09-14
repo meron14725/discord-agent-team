@@ -10,7 +10,7 @@
 
 | task | 前task | 状態 | branch | commit | 計画版 | 計画hash |
 | --- | --- | --- | --- | --- | ---: | --- |
-| TASK-bfa8e370-148 | - | Reviewing | agent/issue-5-task-bfa8e370-148-r1 | 2efa39f36c92777b83f092fa69f6901fc2380333 | 4 | sha256:e57b2c62af5c381cbd62e73cdff0fc59ea28bbea6d66a23ca9718cb60f3e5729 |
+| TASK-bfa8e370-148 | - | Reviewing | agent/issue-5-task-bfa8e370-148-r1 | 65f85356dada93ca6c6f27fa1579ea7be3a4e7e3 | 4 | sha256:e57b2c62af5c381cbd62e73cdff0fc59ea28bbea6d66a23ca9718cb60f3e5729 |
 
 ## 話題スレッド
 

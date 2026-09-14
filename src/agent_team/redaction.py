@@ -102,7 +102,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "generic_credential_assignment",
         re.compile(
             r"(?<![\w-])[\"']?(?:password|passwd|passphrase|api[_-]?key|"
-            r"access[_-]?token|auth[_-]?token|client[_-]?secret|secret)[\"']?"
+            r"access[_-]?token|auth[_-]?token|token|client[_-]?secret|secret)[\"']?"
             r"\s*[:=]\s*[\"']?[^\s\"'`,;}{]{8,}",
             re.IGNORECASE,
         ),
@@ -165,6 +165,26 @@ class SecretScanner:
             content_hash=self._salted_hash(text.encode("utf-8", errors="surrogatepass")),
             findings=ordered,
         )
+
+    def redact_text(self, text: str, marker: str = "[redacted]") -> str:
+        """Replace every detected secret span without retaining the matched value."""
+
+        report = self.scan_text(text)
+        if not report.findings:
+            return text
+        ranges: list[tuple[int, int]] = []
+        for finding in report.findings:
+            if ranges and finding.start <= ranges[-1][1]:
+                ranges[-1] = (ranges[-1][0], max(ranges[-1][1], finding.end))
+            else:
+                ranges.append((finding.start, finding.end))
+        parts: list[str] = []
+        cursor = 0
+        for start, end in ranges:
+            parts.extend((text[cursor:start], marker))
+            cursor = end
+        parts.append(text[cursor:])
+        return "".join(parts)
 
     def inspect_content(self, content: bytes, mime_type: str = "application/octet-stream") -> ContentInspection:
         """Exclude binary content and return clean UTF-8 text only after scanning."""

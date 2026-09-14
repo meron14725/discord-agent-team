@@ -8,25 +8,27 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from .contracts import CoordinationDecision, SpecialistDecision
+from .redaction import SecretScanner
 
 Decision = CoordinationDecision | SpecialistDecision
-Formatter = Callable[["PersonaFormatRequest"], Awaitable[str] | str]
+Formatter = Callable[["PersonaFormatRequest"], Awaitable[str]]
 QUESTION_RE = re.compile(r"[?？]")
 COMPLETED_RE = re.compile(r"(?:実行|変更|作業|送信|公開|マージ).{0,8}(?:済み|完了|成功|しました)")
 FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
 NOT_RUN_RE = re.compile(r"(?:未実行|実行していません|not[_ -]?run)", re.IGNORECASE)
-SECRET_RE = re.compile(r"(?i)(?:authorization:\s*bearer|api[_-]?key\s*[:=]|token\s*[:=])\s*\S+")
 APPROVAL_WAIT_RE = re.compile(r"(?:承認待ち|承認が必要|approval\s+required)", re.IGNORECASE)
 APPROVAL_DONE_RE = re.compile(r"(?:承認済み|承認は不要|承認不要|approved)", re.IGNORECASE)
 HANDOFF_RE = re.compile(r"(?:引き継ぎ|委任)(?:ます|ました|済み)")
 TASK_REGISTERED_RE = re.compile(r"(?:案件|タスク|TASK).{0,12}(?:登録|作成)(?:済み|しました)")
 CONTROL_PREFIX = "[fixed-facts]"
+PERSONA_SECRET_SCANNER = SecretScanner(b"persona-boundary-v1")
 
 
 @dataclass(frozen=True)
@@ -193,7 +195,7 @@ def _fact_payload(envelope: FixedFactEnvelope) -> dict[str, Any]:
     # detected secret value with a stable marker.
     def safe(value: Any) -> Any:
         if isinstance(value, str):
-            return "[redacted]" if SECRET_RE.search(value) else value
+            return PERSONA_SECRET_SCANNER.redact_text(value)
         if isinstance(value, list):
             return [safe(item) for item in value]
         if isinstance(value, dict):
@@ -209,7 +211,7 @@ def fixed_fact_block(envelope: FixedFactEnvelope) -> str:
     )
 
 
-def persona_formatter(request: PersonaFormatRequest) -> str:
+async def persona_formatter(request: PersonaFormatRequest) -> str:
     """Deterministic presentation formatter using the selected definition.
 
     Persona text is treated as data: it must identify the selected role and
@@ -257,7 +259,7 @@ def validate_final_reply(
         raise ValueError("empty")
     if len(text) > max_characters:
         raise ValueError("over_limit")
-    if SECRET_RE.search(text):
+    if PERSONA_SECRET_SCANNER.scan_text(text).blocked:
         raise ValueError("secret")
     checks.append("secret_absent")
     lines = text.splitlines()
@@ -336,13 +338,38 @@ async def render_persona_reply(
     control = deterministic_fallback(envelope)
     reason = ""
     try:
-        request = PersonaFormatRequest(persona, envelope, decision.reply)
-        candidate = formatter(request)
-        if hasattr(candidate, "__await__"):
-            candidate = await asyncio.wait_for(candidate, timeout_seconds)
+        # The formatter gets a separately redacted copy of every textual
+        # input. The authoritative envelope stays unchanged for its digest and
+        # invariant checks; its transport representation is also redacted.
+        redact = PERSONA_SECRET_SCANNER.redact_text
+        safe_envelope = replace(
+            envelope,
+            role_id=redact(envelope.role_id),
+            action=redact(envelope.action),
+            execution_state=redact(envelope.execution_state),
+            approval_state=redact(envelope.approval_state),
+            approval_reason=redact(envelope.approval_reason),
+            handoff_roles=tuple(redact(value) for value in envelope.handoff_roles),
+            handoff_instructions=tuple(redact(value) for value in envelope.handoff_instructions),
+            next_step=redact(envelope.next_step),
+            identifiers=tuple((redact(key), redact(value)) for key, value in envelope.identifiers),
+            targets=tuple((redact(key), redact(value)) for key, value in envelope.targets),
+            quantities=tuple((redact(key), redact(value)) for key, value in envelope.quantities),
+            task_summary=redact(envelope.task_summary),
+            continuation_instruction=redact(envelope.continuation_instruction),
+            change_plan=tuple((redact(key), redact(value)) for key, value in envelope.change_plan),
+        )
+        safe_reply = redact(decision.reply)
+        safe_persona = replace(persona, content=redact(persona.content))
+        request = PersonaFormatRequest(safe_persona, safe_envelope, safe_reply)
+        # Reject synchronous callbacks before invoking them. This keeps a
+        # blocking callback from stalling Discord fallback delivery.
+        if not inspect.iscoroutinefunction(formatter):
+            raise TypeError("formatter_contract_requires_async")
+        candidate = await asyncio.wait_for(formatter(request), timeout_seconds)
         if not isinstance(candidate, str) or not candidate.strip():
             raise ValueError("empty_or_invalid_formatter_result")
-        _validate_candidate(candidate, decision.reply)
+        _validate_candidate(candidate, safe_reply)
         body = "\n\n".join(part for part in (str(candidate), *control_blocks, control) if part)
         checks = validate_final_reply(body, envelope, max_characters=max_characters)
     except asyncio.TimeoutError:

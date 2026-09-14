@@ -1206,11 +1206,20 @@ class Engine:
                 _, job = self.current(s, job_id, fence)
                 saved = job.data.get("response")
                 saved_request = job.data.get("request")
-            request = (
-                RunRequest.model_validate(saved_request)
-                if saved
-                else await asyncio.to_thread(self.prepare, job_id, fence)
-            )
+            if saved:
+                request = RunRequest.model_validate(saved_request)
+            else:
+                # Fetching a repository can outlive the lease before the model starts.
+                preparation = asyncio.create_task(asyncio.to_thread(self.prepare, job_id, fence))
+                try:
+                    while not preparation.done():
+                        await asyncio.wait({preparation}, timeout=min(15, self.settings.lease_seconds / 3))
+                        if not preparation.done():
+                            await asyncio.to_thread(self.heartbeat, job_id, fence)
+                    request = preparation.result()
+                finally:
+                    if not preparation.done():
+                        preparation.cancel()
             phase = "run"
             execution = asyncio.create_task(self.runner.run(request)) if not saved else None
             if execution:

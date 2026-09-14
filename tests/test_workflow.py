@@ -17,6 +17,25 @@ def step(engine):
     return claimed
 
 
+def test_slow_preparation_keeps_job_lease_alive(team, monkeypatch):
+    settings, db, _, service, engine, command = team
+    settings.lease_seconds = 1
+    task = command("request", repo="demo", text="slow source fetch")
+    prepare = engine.prepare
+
+    def slow_prepare(*args):
+        time.sleep(1.2)
+        return prepare(*args)
+
+    monkeypatch.setattr(engine, "prepare", slow_prepare)
+    claim = step(engine)
+    with db.transaction() as session:
+        job = session.get(Job, claim[0])
+        assert job.status == "done"
+        assert job.attempt == 1
+    assert service.status(task["id"])["state"] == "AwaitingSpecApproval"
+
+
 def ready(team):
     _, _, _, service, engine, command = team
     task = command("request", repo="demo", text="テスト追加")

@@ -119,7 +119,7 @@ def test_additional_patterns_are_classified_without_retaining_the_match():
 def test_redact_text_uses_all_shared_patterns_and_preserves_safe_context():
     secrets = [
         "ghp_" + "D" * 36,
-        "password=" + "G" * 20,
+        "password" + "=" + "G" * 20,
         "Authorization: Basic " + "H" * 24,
     ]
     text = "before " + " middle ".join(secrets) + " after"

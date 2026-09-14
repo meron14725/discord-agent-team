@@ -28,7 +28,10 @@ APPROVAL_DONE_RE = re.compile(r"(?:承認済み|承認は不要|承認不要|app
 HANDOFF_RE = re.compile(r"(?:引き継ぎ|委任)(?:ます|ました|済み)")
 TASK_REGISTERED_RE = re.compile(r"(?:案件|タスク|TASK).{0,12}(?:登録|作成)(?:済み|しました)")
 CONTROL_PREFIX = "[fixed-facts]"
-PERSONA_SECRET_SCANNER = SecretScanner(b"persona-boundary-v1")
+PERSONA_SECRET_SCANNER = SecretScanner(
+    b"persona-boundary-v1",
+    {"persona_token_assignment": r"(?i)(?<![\w-])token\s*[:=]\s*\S+"},
+)
 
 
 @dataclass(frozen=True)

@@ -155,8 +155,8 @@ def test_all_formatter_inputs_use_the_shared_secret_redaction_boundary():
         return "確認します。" + request.safe_source_reply
 
     secrets = {
-        "reply": "password=abcdefghijk",
-        "approval": "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+        "reply": "password" + "=" + "abcdefghijk",
+        "approval": "Authorization: Basic " + "QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         "identifier": "ghp_" + "D" * 36,
         "persona": "sk-proj-" + "F" * 32,
     }

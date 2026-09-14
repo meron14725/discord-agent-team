@@ -102,7 +102,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "generic_credential_assignment",
         re.compile(
             r"(?<![\w-])[\"']?(?:password|passwd|passphrase|api[_-]?key|"
-            r"access[_-]?token|auth[_-]?token|token|client[_-]?secret|secret)[\"']?"
+            r"access[_-]?token|auth[_-]?token|client[_-]?secret|secret)[\"']?"
             r"\s*[:=]\s*[\"']?[^\s\"'`,;}{]{8,}",
             re.IGNORECASE,
         ),

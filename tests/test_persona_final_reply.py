@@ -20,3 +20,20 @@ def test_persona_never_changes_authoritative_decision():
     assert decision.action == "request_approval"
     assert result.audit.fallback
     assert "承認待ち" in result.text
+
+
+def test_all_authoritative_specialist_fields_survive_fallback_and_digest():
+    decision = SpecialistDecision(
+        action="continue", reply="続けます", task_summary="", approval_reason="",
+        continuation_instruction="検証を実行", sre_plan=None, handoffs=[]
+    )
+    result = asyncio.run(render_persona_reply(
+        decision=decision, role_id="backend_integrator",
+        persona=PersonaDefinition("backend_integrator", "v1", "bad"),
+        formatter=lambda r: "", identifiers={"event_id": "evt-1"},
+        targets={"repository": "sample"}, quantities={"attempt": 1},
+    ))
+    assert result.audit.fallback
+    assert "検証を実行" in result.text
+    assert "evt-1" in result.text and "sample" in result.text
+    assert len(result.audit.fact_digest) == 64

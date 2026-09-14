@@ -1,7 +1,7 @@
 import asyncio
 
 from agent_team.contracts import SpecialistDecision
-from agent_team.persona import PersonaDefinition, render_persona_reply
+from agent_team.persona import PersonaDefinition, persona_formatter, render_persona_reply
 
 
 def decision(action="reply"):
@@ -33,3 +33,21 @@ def test_timeout_falls_back_without_rerunning_decision():
     result = render(slow, timeout_seconds=.001)
     assert result.audit.fallback and result.audit.fallback_reason == "timeout"
     assert len(calls) == 1
+
+
+def test_real_formatter_uses_selected_persona_and_differs_by_role():
+    outputs = set()
+    for role in ("coordinator", "cto", "backend_integrator", "security_sre"):
+        persona = PersonaDefinition(role, "v1", f"role_id: {role}\n## Voice\n簡潔")
+        result = asyncio.run(render_persona_reply(
+            decision=decision(), role_id=role, persona=persona, formatter=persona_formatter
+        ))
+        assert not result.audit.fallback
+        outputs.add(result.text.split("未実行です。", 1)[0])
+    assert len(outputs) == 4
+
+
+def test_fallback_validation_failure_returns_transport_stop_signal():
+    result = render(lambda request: "", max_characters=1)
+    assert result.text == ""
+    assert result.audit.final_validation == "blocked"

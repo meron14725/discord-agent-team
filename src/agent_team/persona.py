@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from .contracts import CoordinationDecision, SpecialistDecision
 
@@ -38,10 +38,21 @@ class FixedFactEnvelope:
     approval_reason: str
     handoff_roles: tuple[str, ...]
     next_step: str
+    identifiers: tuple[tuple[str, str], ...]
+    targets: tuple[tuple[str, str], ...]
+    quantities: tuple[tuple[str, str], ...]
+    task_summary: str
+    continuation_instruction: str
+    change_plan: tuple[tuple[str, str], ...]
     fact_digest: str
 
     @classmethod
-    def from_decision(cls, role_id: str, decision: Decision, *, execution_state: str = "not_run"):
+    def from_decision(
+        cls, role_id: str, decision: Decision, *, execution_state: str = "not_run",
+        identifiers: Mapping[str, Any] | None = None,
+        targets: Mapping[str, Any] | None = None,
+        quantities: Mapping[str, Any] | None = None,
+    ):
         approval_state = "waiting" if getattr(decision, "action") == "request_approval" else "none"
         handoffs = getattr(decision, "handoffs", ()) or getattr(decision, "delegations", ())
         roles = tuple(item.role for item in handoffs)
@@ -55,6 +66,11 @@ class FixedFactEnvelope:
             "task": "task_registration",
             "reply": "complete",
         }
+        plan = getattr(decision, "sre_plan", None)
+        plan_facts = plan.model_dump(mode="json") if plan is not None else {}
+        # Only explicit, already validated values enter the envelope.  No fact is
+        # inferred from free-form reply text.
+        stable = lambda values: tuple(sorted((str(k), str(v)) for k, v in (values or {}).items()))
         facts = {
             "role_id": role_id,
             "action": decision.action,
@@ -63,6 +79,12 @@ class FixedFactEnvelope:
             "approval_reason": getattr(decision, "approval_reason", ""),
             "handoff_roles": roles,
             "next_step": next_steps[decision.action],
+            "identifiers": stable(identifiers),
+            "targets": stable(targets),
+            "quantities": stable(quantities),
+            "task_summary": getattr(decision, "task_summary", ""),
+            "continuation_instruction": getattr(decision, "continuation_instruction", ""),
+            "change_plan": stable(plan_facts),
         }
         digest = hashlib.sha256(
             json.dumps(facts, ensure_ascii=False, sort_keys=True).encode()
@@ -125,7 +147,45 @@ def deterministic_fallback(envelope: FixedFactEnvelope) -> str:
         "task_registration": "次は正式案件の登録です。",
         "complete": "次の自動操作はありません。",
     }[envelope.next_step]
-    return state + next_text
+    details = []
+    if envelope.approval_reason:
+        details.append("承認理由: " + envelope.approval_reason + "。")
+    if envelope.handoff_roles:
+        details.append("引き継ぎ先: " + ", ".join(envelope.handoff_roles) + "。")
+    if envelope.task_summary:
+        details.append("案件要約: " + envelope.task_summary + "。")
+    if envelope.continuation_instruction:
+        details.append("継続内容: " + envelope.continuation_instruction + "。")
+    if envelope.change_plan:
+        details.append("変更計画: " + json.dumps(dict(envelope.change_plan), ensure_ascii=False, sort_keys=True) + "。")
+    for label, values in (("識別子", envelope.identifiers), ("対象", envelope.targets), ("数量", envelope.quantities)):
+        if values:
+            details.append(label + ": " + json.dumps(dict(values), ensure_ascii=False, sort_keys=True) + "。")
+    return state + "".join(details) + next_text
+
+
+def persona_formatter(request: PersonaFormatRequest) -> str:
+    """Deterministic presentation formatter using the selected definition.
+
+    Persona text is treated as data: it must identify the selected role and
+    contain the required Voice section.  It cannot introduce facts or control
+    instructions.  The role-specific lead makes all four presentations
+    distinguishable while the source reply remains intact.
+    """
+    if f"role_id: {request.persona.role_id}" not in request.persona.content:
+        raise ValueError("persona_role_mismatch")
+    if "## Voice" not in request.persona.content:
+        raise ValueError("persona_voice_missing")
+    leads = {
+        "coordinator": "結論と次の担当を整理します。",
+        "cto": "要件と技術判断を分けて示します。",
+        "backend_integrator": "実装結果と検証点を示します。",
+        "security_sre": "安全条件と承認状態を先に示します。",
+    }
+    try:
+        return leads[request.persona.role_id] + request.safe_source_reply
+    except KeyError as exc:
+        raise ValueError("unsupported_persona_role") from exc
 
 
 def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characters: int) -> None:
@@ -140,12 +200,21 @@ def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characte
     if envelope.execution_state == "not_run" and COMPLETED_RE.search(text):
         raise ValueError("not_run_contradiction")
     sentences = [part for part in re.split(r"(?<=[。！？!?])|\n+", text) if part.strip()]
-    if len(sentences) > 4 and not any(key in text for key in ("安全", "検証", "承認", "理由:")):
+    if (len(sentences) > 4 and text != deterministic_fallback(envelope)
+        and "[detail:safety]" not in text and "[detail:verification]" not in text):
         raise ValueError("too_many_sentences")
     # Deterministic control state must remain visible in every final rendering.
     expected = deterministic_fallback(envelope).split("。")[-2]
     if expected and expected not in text:
         raise ValueError("next_step_missing")
+    # Deterministic facts are rendered by the control block, then checked as a
+    # whole.  The formatter never gets to replace these values.
+    control = deterministic_fallback(envelope)
+    for fact in (envelope.approval_reason, envelope.task_summary, envelope.continuation_instruction, *envelope.handoff_roles):
+        if fact and fact not in text:
+            raise ValueError("fixed_fact_missing")
+    if envelope.change_plan and "変更計画:" not in text:
+        raise ValueError("change_plan_missing")
 
 
 async def render_persona_reply(
@@ -156,12 +225,18 @@ async def render_persona_reply(
     formatter: Formatter,
     control_blocks: tuple[str, ...] = (),
     execution_state: str = "not_run",
+    identifiers: Mapping[str, Any] | None = None,
+    targets: Mapping[str, Any] | None = None,
+    quantities: Mapping[str, Any] | None = None,
     timeout_seconds: float = 2.0,
     max_characters: int = 1800,
 ) -> PersonaRenderResult:
     """Format only after validation, then validate the fully composed Discord body."""
-    envelope = FixedFactEnvelope.from_decision(role_id, decision, execution_state=execution_state)
-    control = deterministic_fallback(envelope).split("。")[-2] + "。"
+    envelope = FixedFactEnvelope.from_decision(
+        role_id, decision, execution_state=execution_state,
+        identifiers=identifiers, targets=targets, quantities=quantities,
+    )
+    control = deterministic_fallback(envelope)
     reason = ""
     try:
         request = PersonaFormatRequest(persona, envelope, decision.reply)
@@ -178,7 +253,15 @@ async def render_persona_reply(
         reason = str(exc) or "internal_error"
     if reason:
         body = deterministic_fallback(envelope)
-        validate_final_reply(body, envelope, max_characters=max_characters)
+        try:
+            validate_final_reply(body, envelope, max_characters=max_characters)
+        except Exception as exc:
+            # A bad operational limit must not leak an unvalidated reply.  Empty
+            # text is the defined transport stop signal; callers must not send it.
+            return PersonaRenderResult(
+                "", PersonaAudit(role_id, persona.version, True,
+                f"fallback_validation:{exc}", envelope.fact_digest, "blocked")
+            )
     return PersonaRenderResult(
         body,
         PersonaAudit(role_id, persona.version, bool(reason), reason, envelope.fact_digest, "passed"),

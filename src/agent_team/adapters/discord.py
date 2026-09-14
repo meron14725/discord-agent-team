@@ -10,10 +10,10 @@ import httpx
 from discord import app_commands
 
 from ..config import load_settings, secret
-from ..contracts import SpecialistDecision
+from ..contracts import CoordinationDecision, SpecialistDecision
 from ..coordination import resolve_specialist_handoffs
 from ..discord_delivery import discord_parts, specialist_next_step, task_next_step
-from ..persona import PersonaDefinition, render_persona_reply
+from ..persona import PersonaDefinition, persona_formatter, render_persona_reply
 from ..prompt_context import load_agent_prompt_context
 from ..redaction import SecretScanner
 
@@ -736,7 +736,38 @@ async def serve():
                             log.warning("Coordinated task rejected: HTTP %s", task.status_code)
                             await waiting.edit(content="作業依頼の登録に失敗しました。監査ログを確認します。")
                             return
-                    await waiting.edit(content=decision["reply"])
+                    coordinator_body = decision["reply"]
+                    if settings.personas.enabled:
+                        validated_coordinator = CoordinationDecision.model_validate(decision)
+                        role_id = settings.role_registry.resolve("coordinator")
+                        rendered = await render_persona_reply(
+                            decision=validated_coordinator,
+                            role_id=role_id,
+                            persona=PersonaDefinition(
+                                role_id,
+                                prompt_context.persona_versions[role_id],
+                                prompt_context.personas[role_id],
+                            ),
+                            formatter=persona_formatter,
+                            execution_state=(
+                                "succeeded" if validated_coordinator.action == "task" else "not_run"
+                            ),
+                            identifiers={"event_id": message.id},
+                            timeout_seconds=settings.personas.timeout_seconds,
+                            max_characters=settings.personas.max_characters,
+                        )
+                        if not rendered.text:
+                            log.error("persona final validation blocked coordinator delivery")
+                            await waiting.edit(content="安全検査により返信を停止しました。")
+                            return
+                        coordinator_body = rendered.text
+                        log.info(
+                            "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
+                            rendered.audit.role_id, rendered.audit.version,
+                            rendered.audit.fallback, rendered.audit.fallback_reason,
+                            rendered.audit.fact_digest, rendered.audit.final_validation,
+                        )
+                    await waiting.edit(content=coordinator_body)
                     if decision["action"] == "delegate":
                         bots = role_clients
                         initial_roles = [item["role"] for item in decision["delegations"]]
@@ -891,7 +922,7 @@ async def serve():
                                             prompt_context.persona_versions[role_id],
                                             prompt_context.personas[role_id],
                                         ),
-                                        formatter=lambda request: request.safe_source_reply,
+                                        formatter=persona_formatter,
                                         control_blocks=((attention.strip(),) if attention else ()),
                                         timeout_seconds=settings.personas.timeout_seconds,
                                         max_characters=settings.personas.max_characters,
@@ -906,6 +937,9 @@ async def serve():
                                         rendered.audit.fact_digest,
                                         rendered.audit.final_validation,
                                     )
+                                if not final_body:
+                                    log.error("persona final validation blocked delivery role=%s", delegated["role"])
+                                    return
                                 await send_chunked(
                                     channel,
                                     final_body,

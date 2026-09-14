@@ -107,6 +107,7 @@ class Settings(BaseModel):
     max_files: int = 100
     source_max_files: int = 190
     max_bytes: int = 2_000_000
+    source_max_bytes: int = 4_000_000
     auto_max_lines: int = 200
     message_content: bool = False
     natural_language_requests: bool = False

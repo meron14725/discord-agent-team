@@ -22,6 +22,10 @@ def source_file_limit(request):
     return 190 if request.maintenance_paths else 100
 
 
+def source_byte_limit(request):
+    return 4_000_000 if request.maintenance_paths else 2_000_000
+
+
 def brokered_source_context(request):
     if request.maintenance_paths:
         return (
@@ -254,7 +258,7 @@ class SbxRunner:
         if not 1 <= request.timeout <= 1800:
             raise GuardError("Run timeout must be between 1 and 1800 seconds")
         if (len(request.files) > source_file_limit(request)
-            or sum(len(v.encode()) for v in request.files.values()) > 2_000_000):
+            or sum(len(v.encode()) for v in request.files.values()) > source_byte_limit(request)):
             raise GuardError("Input too large")
         for path in request.files:
             safe_path(path)

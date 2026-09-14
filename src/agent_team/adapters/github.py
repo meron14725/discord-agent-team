@@ -166,7 +166,8 @@ class GitHub:
                 )
                 continue
             forwarded += len(content)
-            if forwarded > self.settings.max_bytes or len(files) >= self.settings.source_max_files:
+            if (forwarded > self.settings.source_max_bytes
+                or len(files) >= self.settings.source_max_files):
                 manifest.append({**metadata, "forwarded": False, "reason": "limit"})
                 continue
             files[path] = inspection.text

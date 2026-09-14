@@ -414,6 +414,67 @@ def test_engine_runs_v2_end_to_end_with_two_early_approval_gates(team):
         assert delegation.status == "completed"
 
 
+def test_v2_external_head_change_enqueues_identity_bound_cto_review(team):
+    settings, db, github, service, engine, command = team
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    settings.workflow_v2.requirements_approver_ids = ["demo-owner"]
+    settings.workflow_v2.plan_approver_ids = ["demo-owner"]
+    settings.workflow_v2.github_issue_conditional_updates = True
+
+    task = command("request", repo="demo", text="head更新後の再レビュー")
+    step(engine)
+    task = service.status(task["id"])
+    command(
+        "approve_requirements",
+        task_id=task["id"],
+        hash=task["data"]["requirements_hash"],
+        confirmation_id=task["data"]["requirements_confirmation_id"],
+    )
+    step(engine)
+    step(engine)
+    task = service.status(task["id"])
+    command(
+        "approve_plan",
+        task_id=task["id"],
+        hash=task["data"]["plan_hash"],
+        base_sha=task["data"]["base_sha"],
+        confirmation_id=task["data"]["plan_confirmation_id"],
+    )
+    step(engine)
+    step(engine)
+    task = service.status(task["id"])
+    assert task["state"] == "AwaitingChecks"
+
+    old_head = task["data"]["head_sha"]
+    new_head = "b" * 40
+    github.write("source:" + new_head, github.source(settings.repos["demo"], old_head))
+    snapshot = github.read(task["id"])
+    snapshot["head_sha"] = new_head
+    github.write(task["id"], snapshot)
+
+    engine.reconcile()
+
+    current = service.status(task["id"])
+    assert current["state"] == "Reviewing"
+    with db.transaction() as session:
+        job = session.scalar(
+            select(Job).where(Job.task_id == task["id"]).order_by(Job.created.desc())
+        )
+        assert job.status == "queued"
+        assert job.kind == "review"
+        assert job.role == "cto"
+        assert job.data == {
+            "workflow_version": 2,
+            "requirements_hash": current["data"]["requirements_hash"],
+            "plan_version": current["data"]["plan_version"],
+            "plan_hash": current["data"]["plan_hash"],
+            "base_sha": current["data"]["base_sha"],
+            "head_sha": new_head,
+        }
+    assert engine.claim()[0] == job.id
+
+
 def test_v2_safe_issue_proposal_resumes_from_saved_result_after_owner_applies_it(team):
     settings, db, github, service, engine, command = team
     settings.workflow_v2.enabled = True

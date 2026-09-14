@@ -1353,7 +1353,10 @@ class Engine:
                         invalidate(s, task)
                         task.data = {**task.data, "head_sha": snap["head_sha"]}
                         transition(s, task, "Reviewing", "head更新により承認を失効")
-                        enqueue(s, task, "review")
+                        if task.workflow_version == 2:
+                            self.enqueue_v2(s, task, "review", "cto")
+                        else:
+                            enqueue(s, task, "review")
                         continue
                     if task.state not in {
                         "AwaitingChecks",

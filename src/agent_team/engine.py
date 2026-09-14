@@ -554,6 +554,7 @@ class Engine:
         }
         return RunRequest(
             maintenance_paths=scoped_paths if kind in {"implement", "fix"} else [],
+            resume_patch_job_id=job.data.get("resume_patch_job_id", ""),
             auth_mode=self.settings.auth_mode,
             job_id=job_id,
             role=role,

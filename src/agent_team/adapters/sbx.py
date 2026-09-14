@@ -128,6 +128,27 @@ class SbxRunner:
                 "note": "Generated patches only; not evidence of application or test success",
             }, ensure_ascii=False))
 
+    def resume_patch(self, request):
+        if not request.resume_patch_job_id:
+            return None
+        execution_policy(request)
+        if not self.state_dir or not request.maintenance_paths or request.kind != "implement":
+            raise GuardError("Patch resume requires a scoped implementation")
+        key = hashlib.sha256(request.resume_patch_job_id.encode()).hexdigest()
+        saved = json.loads((self.state_dir / "results" / (key + ".json")).read_text())
+        result = Result.model_validate(saved["result"])
+        if (saved["job_id"] != request.resume_patch_job_id or result.status != "completed"
+            or sorted(saved["maintenance_paths"]) != sorted(request.maintenance_paths)
+            or any(getattr(result, field) != getattr(request, field) for field in IDENTITY)):
+            raise GuardError("Saved patch identity or authorization changed")
+        if self.commands.scanner.scan_text(result.model_dump_json()).blocked:
+            raise GuardError("Potential secret in saved patch")
+        for proposal in result.patches:
+            if proposal.patch_file:
+                raise GuardError("Saved patch must contain resolved contents")
+            self.commands.patch_paths(proposal.patch, request.maintenance_paths)
+        return result
+
     def save_names(self):
         if self.state_dir:
             target = self.state_dir / "vms.json"
@@ -397,7 +418,14 @@ else:
         ]
         if request.model:
             args.extend(["--model", request.model])
-        output = await self.command(job_id, [*args, "-"], request.timeout, prompt)
+        resumed = self.resume_patch(request)
+        if resumed is None:
+            output = await self.command(job_id, [*args, "-"], request.timeout, prompt)
+        else:
+            await self.command(job_id, ["exec", "-i", name, "python3", "-c",
+                                       "import pathlib,sys; pathlib.Path('/tmp/team-result.json').write_text(sys.stdin.read())"],
+                               stdin=resumed.model_dump_json())
+            output = ""
         if self.commands.scanner.scan_text(output).blocked:
             raise GuardError("Potential secret blocked at sandbox model output boundary")
         if brokered_write:

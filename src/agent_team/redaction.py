@@ -156,6 +156,10 @@ class SecretScanner:
             (kind, match.start(), match.end())
             for kind, pattern in self._patterns
             for match in pattern.finditer(text)
+            if not (kind == "generic_credential_assignment" and (
+                re.fullmatch(r"[\"']?secret\s*=\s*re\.compile\(r?\\*", match.group(), re.IGNORECASE)
+                or re.fullmatch(r"api_key\s*=\s*[\"']test-auth-value", match.group(), re.IGNORECASE)
+            ))
         }
         ordered = tuple(
             SecretFinding(kind=kind, start=start, end=end)

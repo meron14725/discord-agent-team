@@ -135,3 +135,37 @@ def test_patch_file_is_validated_and_saved_before_application(tmp_path):
     saved = json.loads(next((tmp_path / 'results').glob('*.json')).read_text())
     assert saved['result']['patches'][0]['patch'] == PATCH
     assert 'not evidence' in saved['note']
+
+
+def test_known_source_patterns_do_not_hide_real_credentials():
+    from agent_team.redaction import SecretScanner
+
+    scanner = SecretScanner(b'test-salt-long-enough')
+    assert not scanner.scan_text('SECRET = re.compile(r"pattern")').blocked
+    assert not scanner.scan_text(json.dumps('SECRET = re.compile(r"pattern")')).blocked
+    assert not scanner.scan_text('api_key="test-auth-value"').blocked
+    assert scanner.scan_text('api_key="actual-secret-value"').blocked
+    assert scanner.scan_text('secret="actual-secret-value"').blocked
+    assert scanner.scan_text('SECRET = re.compile(r"' + 'ghp_' + 'A' * 36 + '")').blocked
+
+
+def test_saved_patch_resume_requires_same_spec_plan_scope_and_identity(tmp_path):
+    import asyncio
+    import hashlib
+
+    from agent_team.adapters.codex import MockRunner
+    from agent_team.adapters.sbx import SbxRunner
+    from agent_team.contracts import PatchProposal
+
+    req = request(role='backend_integrator', kind='implement', maintenance_paths=[PATH], resume_patch_job_id='old-job')
+    result = asyncio.run(MockRunner().run(req)).result
+    result.patches = [PatchProposal(patch=PATCH, rationale='saved proposal')]
+    root = tmp_path / 'results'
+    root.mkdir()
+    (root / (hashlib.sha256(b'old-job').hexdigest() + '.json')).write_text(json.dumps({
+        'job_id':'old-job', 'result':result.model_dump(), 'maintenance_paths':[PATH]}))
+    runner = SbxRunner(state_dir=tmp_path)
+    assert runner.resume_patch(req).patches[0].patch == PATCH
+    for change in [{'spec_hash':'other'}, {'head_sha':'other'}, {'maintenance_paths':['src/app.py']}, {'kind':'review'}]:
+        with pytest.raises(GuardError):
+            runner.resume_patch(req.model_copy(update=change))

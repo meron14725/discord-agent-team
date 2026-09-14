@@ -19,7 +19,11 @@ Decision = CoordinationDecision | SpecialistDecision
 Formatter = Callable[["PersonaFormatRequest"], Awaitable[str] | str]
 QUESTION_RE = re.compile(r"[?？]")
 COMPLETED_RE = re.compile(r"(?:実行|変更|作業|送信|公開|マージ).{0,8}(?:済み|完了|成功|しました)")
+FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
+NOT_RUN_RE = re.compile(r"(?:未実行|実行していません|not[_ -]?run)", re.IGNORECASE)
 SECRET_RE = re.compile(r"(?i)(?:authorization:\s*bearer|api[_-]?key\s*[:=]|token\s*[:=])\s*\S+")
+CONTROL_PREFIX = "[fixed-facts]"
+DISCORD_CONTENT_LIMIT = 2000
 
 
 @dataclass(frozen=True)
@@ -170,7 +174,33 @@ def deterministic_fallback(envelope: FixedFactEnvelope) -> str:
     for label, values in (("識別子", envelope.identifiers), ("対象", envelope.targets), ("数量", envelope.quantities)):
         if values:
             details.append(label + ": " + json.dumps(dict(values), ensure_ascii=False, sort_keys=True) + "。")
-    return state + "".join(details) + next_text
+    return state + "".join(details) + next_text + "\n" + fixed_fact_block(envelope)
+
+
+def _fact_payload(envelope: FixedFactEnvelope) -> dict[str, Any]:
+    """Return the complete authoritative payload used at the transport boundary."""
+    return {
+        "action": envelope.action,
+        "approval_reason": envelope.approval_reason,
+        "approval_state": envelope.approval_state,
+        "change_plan": dict(envelope.change_plan),
+        "continuation_instruction": envelope.continuation_instruction,
+        "execution_state": envelope.execution_state,
+        "handoff_instructions": list(envelope.handoff_instructions),
+        "handoff_roles": list(envelope.handoff_roles),
+        "identifiers": dict(envelope.identifiers),
+        "next_step": envelope.next_step,
+        "quantities": dict(envelope.quantities),
+        "role_id": envelope.role_id,
+        "targets": dict(envelope.targets),
+        "task_summary": envelope.task_summary,
+    }
+
+
+def fixed_fact_block(envelope: FixedFactEnvelope) -> str:
+    return CONTROL_PREFIX + json.dumps(
+        _fact_payload(envelope), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def persona_formatter(request: PersonaFormatRequest) -> str:
@@ -192,7 +222,9 @@ def persona_formatter(request: PersonaFormatRequest) -> str:
         "security_sre": "安全条件と承認状態を先に示します。",
     }
     try:
-        return leads[request.persona.role_id] + request.safe_source_reply
+        marker = re.search(r"^presentation_marker:\s*([^\n]{1,32})$", request.persona.content, re.MULTILINE)
+        style = (marker.group(1) + " ") if marker else leads[request.persona.role_id]
+        return style + request.safe_source_reply
     except KeyError as exc:
         raise ValueError("unsupported_persona_role") from exc
 
@@ -204,38 +236,30 @@ def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characte
         raise ValueError("over_limit")
     if SECRET_RE.search(text):
         raise ValueError("secret")
-    if len(QUESTION_RE.findall(text)) > 1:
+    lines = text.splitlines()
+    control_lines = [line for line in lines if line.startswith(CONTROL_PREFIX)]
+    if control_lines != [fixed_fact_block(envelope)]:
+        raise ValueError("fixed_fact_block_mismatch")
+    presentation = "\n".join(line for line in lines if not line.startswith(CONTROL_PREFIX))
+    if len(QUESTION_RE.findall(presentation)) > 1:
         raise ValueError("multiple_questions")
-    if envelope.execution_state == "not_run" and COMPLETED_RE.search(text):
+    if envelope.execution_state == "not_run" and COMPLETED_RE.search(presentation):
         raise ValueError("not_run_contradiction")
-    sentences = [part for part in re.split(r"(?<=[。！？!?])|\n+", text) if part.strip()]
-    if len(sentences) > 4 and text != deterministic_fallback(envelope):
-        safety_detail = "[detail:safety]" in text and any(
-            value in text for value in (envelope.approval_reason, "承認", "安全") if value
+    if envelope.execution_state == "succeeded" and (FAILED_RE.search(presentation) or NOT_RUN_RE.search(presentation)):
+        raise ValueError("succeeded_contradiction")
+    if envelope.execution_state == "failed" and (COMPLETED_RE.search(presentation) or NOT_RUN_RE.search(presentation)):
+        raise ValueError("failed_contradiction")
+    sentences = [part for part in re.split(r"(?<=[。！？!?])|\n+", presentation) if part.strip()]
+    fallback_presentation = deterministic_fallback(envelope).split("\n" + CONTROL_PREFIX, 1)[0]
+    if len(sentences) > 4 and presentation != fallback_presentation:
+        safety_detail = "[detail:safety]" in presentation and any(
+            value in presentation for value in (envelope.approval_reason, "承認", "安全") if value
         )
-        verification_detail = "[detail:verification]" in text and any(
-            value in text for value in ("検証", envelope.execution_state) if value
+        verification_detail = "[detail:verification]" in presentation and any(
+            value in presentation for value in ("検証", envelope.execution_state) if value
         )
         if not safety_detail and not verification_detail:
             raise ValueError("too_many_sentences")
-    # Deterministic control state must remain visible in every final rendering.
-    expected = deterministic_fallback(envelope).split("。")[-2]
-    if expected and expected not in text:
-        raise ValueError("next_step_missing")
-    # Deterministic facts are rendered by the control block, then checked as a
-    # whole.  The formatter never gets to replace these values.
-    control = deterministic_fallback(envelope)
-    for fact in (envelope.approval_reason, envelope.task_summary,
-                 envelope.continuation_instruction, *envelope.handoff_roles,
-                 *envelope.handoff_instructions):
-        if fact and fact not in text:
-            raise ValueError("fixed_fact_missing")
-    if envelope.change_plan and "変更計画:" not in text:
-        raise ValueError("change_plan_missing")
-    for values in (envelope.identifiers, envelope.targets, envelope.quantities, envelope.change_plan):
-        for key, value in values:
-            if key not in text or value not in text:
-                raise ValueError("structured_fact_missing")
 
 
 async def render_persona_reply(
@@ -276,16 +300,12 @@ async def render_persona_reply(
         reason = str(exc) or "internal_error"
     if reason:
         body = deterministic_fallback(envelope)
-        try:
-            validate_final_reply(body, envelope, max_characters=max_characters)
-        except Exception as exc:
-            # Configuration enforces at least 100 characters.  This final,
-            # fact-derived sentence is deliberately below that bound and keeps
-            # delivery alive without reusing untrusted model prose.
-            state = "未実行" if envelope.execution_state == "not_run" else envelope.execution_state
-            body = f"状態: {state}。次工程: {envelope.next_step}。"
-            validate_final_reply(body, envelope, max_characters=max_characters)
-            reason = f"fallback_validation:{exc}"
+        # The configured bound limits model presentation.  A complete factual
+        # fallback may exceed it, but can never exceed Discord's hard limit.
+        validate_final_reply(
+            body, envelope, max_characters=max(max_characters, len(body))
+            if len(body) <= DISCORD_CONTENT_LIMIT else DISCORD_CONTENT_LIMIT,
+        )
     return PersonaRenderResult(
         body,
         PersonaAudit(role_id, persona.version, bool(reason), reason, envelope.fact_digest, "passed"),

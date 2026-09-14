@@ -1,7 +1,8 @@
 import asyncio
+import pytest
 
 from agent_team.contracts import SpecialistDecision
-from agent_team.persona import PersonaDefinition, render_persona_reply
+from agent_team.persona import FixedFactEnvelope, PersonaDefinition, render_persona_reply, validate_final_reply
 
 
 def test_composed_original_block_is_validated_before_delivery():
@@ -54,3 +55,18 @@ def test_handoff_instruction_and_actual_next_step_are_fixed_facts():
     assert "security_sre" in result.text
     assert "監査ログを確認" in result.text
     assert "次: 統括が安全担当へ引き継ぎ" in result.text
+
+
+def test_control_block_is_a_complete_exact_envelope_not_substring_evidence():
+    decision = SpecialistDecision(action="request_approval", reply="待機", task_summary="", approval_reason="実行しますか？", continuation_instruction="", sre_plan=None, handoffs=[])
+    result = asyncio.run(render_persona_reply(
+        decision=decision, role_id="security_sre",
+        persona=PersonaDefinition("security_sre", "v1", "bad"), formatter=lambda request: "",
+        identifiers={"event_id": "evt-9"}, targets={"channel": "42"}, quantities={"count": 2},
+    ))
+    assert result.audit.fallback and "実行しますか？" in result.text
+    tampered = result.text.replace('"approval_state":"waiting"', '"approval_state":"none"')
+    with pytest.raises(ValueError, match="fixed_fact_block_mismatch"):
+        validate_final_reply(tampered, FixedFactEnvelope.from_decision(
+            "security_sre", decision, identifiers={"event_id": "evt-9"},
+            targets={"channel": "42"}, quantities={"count": 2}), max_characters=2000)

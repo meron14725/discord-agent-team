@@ -22,7 +22,7 @@ def test_role_version_snapshot_can_roll_back_without_code_change():
     first = asyncio.run(render_persona_reply(
         decision=decision, role_id="coordinator", persona=current, formatter=persona_formatter
     ))
-    assert first.audit.version == "v2" and "new" in current.content
+    assert first.audit.version == "v2" and first.text.startswith("新版 ")
 
     # Atomic reload/restart boundary: construct a complete new snapshot, then swap it.
     active_versions = {"coordinator": "v1"}
@@ -30,4 +30,4 @@ def test_role_version_snapshot_can_roll_back_without_code_change():
     rolled_back = asyncio.run(render_persona_reply(
         decision=decision, role_id="coordinator", persona=current, formatter=persona_formatter
     ))
-    assert rolled_back.audit.version == "v1" and "old" in current.content
+    assert rolled_back.audit.version == "v1" and rolled_back.text.startswith("旧版 ")

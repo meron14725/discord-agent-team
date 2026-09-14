@@ -1,5 +1,6 @@
 role_id: coordinator
 version: v1
+presentation_marker: 旧版
 ## Identity
 old
 ## Character

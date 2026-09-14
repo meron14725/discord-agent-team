@@ -94,3 +94,5 @@ v2の接続断（`ConnectError`）は、認証付きworkerヘルスチェック�
 人格追加は通常の`prompts/*`変更禁止と衝突する。オーナーが承認した保守案件に限り、信頼済み設定`maintenance_authorizations[task_id]`へrepository、requirements_hash、plan_hash、owner_id、pathsを記録する。pathsは承認済み計画から抽出した正確なファイル名のみで、globは不可。人格定義`prompts/personas/<role>/vN/PERSONA.md`、設定例`config.example.yaml`、src/testsの統合変更に限定する。会社規則、AGENTS、CI、実設定、秘密情報は例外対象外。
 
 制御側で案件・要件・計画・オーナーを照合してからworkerへ渡し、モデル出力内の自称許可は採用しない。workerの差分適用時と制御側の成果物検査時に同じパス範囲を検証する。別版への変更時は許可を再確認する。通常案件の禁止事項・レビュー・マージ・本番反映の条件は変えない。
+
+実装・修正担当のblocked/needs_clarificationへの`answer`は、同じ仕様・計画の版であれば担当への補足として保持し、承認を外さず再開する。補足で承認済み範囲を変更してはならず、変更が必要なら明示的な`revise`へ戻す。`revise`は従来どおり承認を失効させる。人格案件の読み取り入力には既存のpyproject、lock、prompts、vendorも含め、テスト・ローダーから参照できるようにする。これらの読み取り許可は書き換え許可ではない。

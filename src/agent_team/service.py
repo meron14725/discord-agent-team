@@ -163,6 +163,22 @@ class TaskService:
                     raise GuardError("Cannot revise this task")
                 if not text.strip():
                     raise GuardError("Answer cannot be empty")
+                latest = s.scalar(select(Job).where(Job.task_id == task.id).order_by(Job.created.desc()))
+                if (action == "answer" and task.state == "Blocked" and latest
+                    and latest.kind in {"implement", "fix"} and latest.status == "done"
+                    and latest.data.get("response", {}).get("result", {}).get("status")
+                    in {"blocked", "needs_clarification"}
+                    and task.data.get("requirements_approval_id") and task.data.get("plan_approval_id")):
+                    from .engine import Engine
+
+                    if not Engine.identity_current(task, latest):
+                        raise GuardError("Clarification targets a stale implementation")
+                    task.data = {**task.data, "execution_clarifications":
+                                 task.data.get("execution_clarifications", []) + [text]}
+                    transition(s, task, "Queued" if latest.kind == "implement" else "Fixing",
+                               "担当への確認回答を同じ承認済み計画へ引き継いで再開")
+                    Engine.enqueue_v2(s, task, latest.kind, latest.role)
+                    return self.serialize(task)
                 invalidate(s, task)
                 task.data = {
                     **task.data,

@@ -484,6 +484,8 @@ class Engine:
                 "required_acceptance_ids": task.data.get("requirements_acceptance_ids", []),
                 "implementation_plan": plan_body,
                 "findings": task.data.get("findings", []),
+                "execution_clarifications": task.data.get("execution_clarifications", []),
+                "clarification_scope": "Clarifications do not amend approved requirements or plan. If a reply requires scope changes, report blocked and request an explicit revision.",
             }
             if kind == "consult":
                 with self.db.transaction() as session:
@@ -538,7 +540,10 @@ class Engine:
                     "Give each required_acceptance_ids item its own mapping to changes and tests; "
                     "do not abbreviate acceptance IDs as a range."
                 )
-            source_repo = repo.model_copy(update={"allowed_paths": repo.allowed_paths + scoped_paths})
+            # Tests and loaders need their existing configuration/data as read-only
+            # inputs. This does not add any write exceptions for those files.
+            support_paths = ["pyproject.toml", "uv.lock", "prompts/*", "vendor/*"] if scoped_paths else []
+            source_repo = repo.model_copy(update={"allowed_paths": repo.allowed_paths + scoped_paths + support_paths})
             model_snapshot = self.github.source_context(source_repo, head or base)
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]

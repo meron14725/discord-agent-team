@@ -66,3 +66,27 @@ def test_engine_passes_bound_scope_and_source_without_relaxing_default_repo(team
     req = engine.prepare(*engine.claim())
     assert req.maintenance_paths == ['config.example.yaml', PATH]
     assert PATH not in settings.repos['demo'].allowed_paths
+
+
+def test_implementation_answer_keeps_approvals_and_does_not_redraft(team):
+    from sqlalchemy import select
+
+    from agent_team.db import Job
+
+    _, db, _, service, engine, command = team
+    task_id = approved_implementation(team)
+    with db.transaction() as session:
+        task = session.get(Task, task_id)
+        before = (task.data['requirements_approval_id'], task.data['plan_approval_id'])
+        task.state = 'Blocked'
+        job = session.scalar(select(Job).where(Job.task_id == task_id).order_by(Job.created.desc()))
+        job.status = 'done'
+        job.data = {**job.data, 'response': {'result': {'status':'needs_clarification'}}}
+    result = command('answer', task_id=task_id, text='復旧して進めて')
+    assert result['state'] == 'Queued'
+    assert (result['data']['requirements_approval_id'], result['data']['plan_approval_id']) == before
+    req = engine.prepare(*engine.claim())
+    assert json.loads(req.prompt)['execution_clarifications'] == ['復旧して進めて']
+    revised = command('revise', task_id=task_id, text='要件を変更する')
+    assert revised['state'] == 'DraftingRequirements'
+    assert revised['data']['requirements_approval_id'] == ''

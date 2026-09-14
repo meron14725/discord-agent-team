@@ -18,6 +18,10 @@ IMAGE = "docker/sandbox-templates@sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fb
 IDENTITY = ("task_id", "spec_version", "spec_hash", "head_sha", "base_sha")
 
 
+def source_file_limit(request):
+    return 190 if request.maintenance_paths else 100
+
+
 def brokered_source_context(request):
     if request.maintenance_paths:
         return (
@@ -249,7 +253,8 @@ class SbxRunner:
             raise GuardError("Wrong worker role")
         if not 1 <= request.timeout <= 1800:
             raise GuardError("Run timeout must be between 1 and 1800 seconds")
-        if len(request.files) > 100 or sum(len(v.encode()) for v in request.files.values()) > 2_000_000:
+        if (len(request.files) > source_file_limit(request)
+            or sum(len(v.encode()) for v in request.files.values()) > 2_000_000):
             raise GuardError("Input too large")
         for path in request.files:
             safe_path(path)

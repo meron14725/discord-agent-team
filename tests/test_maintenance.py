@@ -170,3 +170,13 @@ def test_saved_patch_resume_requires_same_spec_plan_scope_and_identity(tmp_path)
     for change in [{'spec_hash':'other'}, {'head_sha':'other'}, {'maintenance_paths':['src/app.py']}, {'kind':'review'}]:
         with pytest.raises(GuardError):
             runner.resume_patch(req.model_copy(update=change))
+
+
+def test_sbx_maintenance_input_limit_is_separate_from_published_change_limit():
+    from agent_team.adapters.sbx import source_file_limit
+
+    source = {f'src/input_{index}.py': 'safe = True\n' for index in range(101)}
+    req = request(role='backend_integrator', kind='fix', files=source,
+                  maintenance_paths=[PATH])
+    assert source_file_limit(req.model_copy(update={'maintenance_paths': []})) == 100
+    assert source_file_limit(req) == 190

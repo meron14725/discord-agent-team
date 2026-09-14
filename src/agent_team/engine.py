@@ -474,7 +474,9 @@ class Engine:
             plan_body = ""
             head = task.data.get("head_sha", "")
             if task.data.get("plan_path"):
-                plan_source = self.github.source_context(repo, head or base)["files"]
+                plan_source = self.github.source(
+                    repo, head or base, paths=[task.data["plan_path"]]
+                )
                 plan_body = plan_source.get(task.data["plan_path"], "")
                 if task.data.get("plan_hash") and digest(plan_body) != task.data["plan_hash"]:
                     raise GuardError("Implementation plan changed after approval")

@@ -867,10 +867,11 @@ def test_plan_review_uses_filtered_snapshot_instead_of_decoding_binary_files(tea
     snapshot = github.source_context(settings.repos['demo'], task['data']['head_sha'])
     assert task['data']['plan_path'] in snapshot['files']
 
-    def legacy_source(*args):
-        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'binary file in repository')
+    def scoped_source(*args, paths=None):
+        assert paths == [task['data']['plan_path']]
+        return {paths[0]: snapshot['files'][paths[0]]}
 
-    monkeypatch.setattr(github, 'source', legacy_source)
+    monkeypatch.setattr(github, 'source', scoped_source)
     monkeypatch.setattr(github, 'source_context', lambda *args: snapshot)
     step(engine)
     assert service.status(task['id'])['state'] == 'AwaitingPlanApproval'

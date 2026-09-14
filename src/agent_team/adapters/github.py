@@ -505,8 +505,9 @@ class MockGitHub:
     def base(self, repo, attempts=1):
         return self.read("base", {"sha": "a" * 40})["sha"]
 
-    def source(self, repo, sha):
-        return self.read("source:" + sha, {"src/example.py": "def greeting():\n    return 'hello'\n"})
+    def source(self, repo, sha, *, paths=None):
+        source = self.read("source:" + sha, {"src/example.py": "def greeting():\n    return 'hello'\n"})
+        return source if paths is None else {path: source[path] for path in paths if path in source}
 
     def source_context(self, repo, sha):
         source = self.source(repo, sha)

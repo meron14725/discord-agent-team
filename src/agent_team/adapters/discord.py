@@ -13,6 +13,8 @@ from ..config import load_settings, secret
 from ..contracts import SpecialistDecision
 from ..coordination import resolve_specialist_handoffs
 from ..discord_delivery import discord_parts, specialist_next_step, task_next_step
+from ..persona import PersonaDefinition, render_persona_reply
+from ..prompt_context import load_agent_prompt_context
 from ..redaction import SecretScanner
 
 log = logging.getLogger(__name__)
@@ -140,6 +142,13 @@ async def send_chunked(
 
 async def serve():
     settings = load_settings()
+    prompt_context = load_agent_prompt_context(
+        settings.role_registry,
+        persona_enabled=settings.personas.enabled,
+        persona_dir=__import__("pathlib").Path(settings.personas.directory),
+        active_versions=settings.personas.active_versions,
+        persona_max_characters=settings.personas.definition_max_characters,
+    )
     import os
 
     internal_token = secret("INTERNAL_TOKEN")
@@ -871,9 +880,35 @@ async def serve():
                                     continuation_turn=continuation_turn,
                                     continuation_limit=settings.specialist_continuation_limit,
                                 )
+                                final_body = f"{attention}{specialist_decision.reply}\n\n{next_step}"
+                                if settings.personas.enabled:
+                                    role_id = settings.role_registry.resolve(delegated["role"])
+                                    rendered = await render_persona_reply(
+                                        decision=specialist_decision,
+                                        role_id=role_id,
+                                        persona=PersonaDefinition(
+                                            role_id,
+                                            prompt_context.persona_versions[role_id],
+                                            prompt_context.personas[role_id],
+                                        ),
+                                        formatter=lambda request: request.safe_source_reply,
+                                        control_blocks=((attention.strip(),) if attention else ()),
+                                        timeout_seconds=settings.personas.timeout_seconds,
+                                        max_characters=settings.personas.max_characters,
+                                    )
+                                    final_body = rendered.text
+                                    log.info(
+                                        "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
+                                        rendered.audit.role_id,
+                                        rendered.audit.version,
+                                        rendered.audit.fallback,
+                                        rendered.audit.fallback_reason,
+                                        rendered.audit.fact_digest,
+                                        rendered.audit.final_validation,
+                                    )
                                 await send_chunked(
                                     channel,
-                                    f"{attention}{specialist_decision.reply}\n\n{next_step}",
+                                    final_body,
                                     event_id=(
                                         f"chat-{message.id}-{delegated['role']}-"
                                         f"{handoff_depth}-{handoff_round}-{continuation_turn}"

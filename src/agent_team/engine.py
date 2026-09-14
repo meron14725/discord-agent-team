@@ -49,7 +49,13 @@ class Engine:
             if settings.mode == "mock"
             else RemoteExplanationRenderer(settings.workflow_v2.renderer_url)
         )
-        self.prompt_context = load_agent_prompt_context(settings.role_registry)
+        self.prompt_context = load_agent_prompt_context(
+            settings.role_registry,
+            persona_enabled=settings.personas.enabled,
+            persona_dir=Path(settings.personas.directory),
+            active_versions=settings.personas.active_versions,
+            persona_max_characters=settings.personas.definition_max_characters,
+        )
         self.vendor_skills = load_vendor_skill_context()
 
     @staticmethod
@@ -480,6 +486,8 @@ class Engine:
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,
             "trusted_role_policy": self.prompt_context.role_policies[role],
+            "trusted_persona": self.prompt_context.personas.get(role, ""),
+            "trusted_persona_version": self.prompt_context.persona_versions.get(role, ""),
             **context,
         }
         return RunRequest(

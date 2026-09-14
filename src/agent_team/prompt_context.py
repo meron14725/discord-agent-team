@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,8 @@ class AgentPromptContext:
     company_memory: str
     company_policy: str
     role_policies: dict[RoleId, str]
+    personas: dict[RoleId, str]
+    persona_versions: dict[RoleId, str]
 
 
 def load_vendor_skill_context(root: Path | None = None) -> dict[str, str]:
@@ -40,7 +43,14 @@ def read_required_prompt(path: Path, label: str, max_characters: int) -> str:
     return value
 
 
-def load_agent_prompt_context(registry: RoleRegistry | None = None) -> AgentPromptContext:
+def load_agent_prompt_context(
+    registry: RoleRegistry | None = None,
+    *,
+    persona_enabled: bool = False,
+    persona_dir: Path | None = None,
+    active_versions: dict[str, str] | None = None,
+    persona_max_characters: int = 30_000,
+) -> AgentPromptContext:
     registry = registry or default_role_registry()
     memory_path = Path(os.environ.get("COMPANY_MEMORY", "prompts/company-memory.md"))
     company_policy_path = Path(
@@ -60,8 +70,37 @@ def load_agent_prompt_context(registry: RoleRegistry | None = None) -> AgentProm
             for alias, canonical in registry.aliases.items()
         }
     )
+    personas: dict[str, str] = {}
+    versions = dict(active_versions or {})
+    if persona_enabled:
+        root = persona_dir or Path(os.environ.get("PERSONA_DIR", "prompts/personas"))
+        required = {"coordinator", "cto", "backend_integrator", "security_sre"}
+        if set(versions) != required:
+            raise ValueError("Persona role/version mapping must exactly match initial roles")
+        loaded = {}
+        for role, version in versions.items():
+            value = read_required_prompt(
+                root / role / version / "PERSONA.md", f"{role}/{version} persona", persona_max_characters
+            )
+            _validate_persona(value, role, version)
+            loaded[role] = value
+        personas = loaded  # atomic assignment only after the whole registry validates
     return AgentPromptContext(
         company_memory=read_required_prompt(memory_path, "company memory", 30_000),
         company_policy=read_required_prompt(company_policy_path, "company policy", 30_000),
         role_policies=role_policies,
+        personas=personas,
+        persona_versions=versions if persona_enabled else {},
     )
+
+
+def _validate_persona(value: str, role: str, version: str) -> None:
+    for heading in ("Identity", "Character", "Conversation", "Voice", "Examples"):
+        if f"## {heading}" not in value:
+            raise ValueError(f"{role}/{version} persona missing {heading}")
+    if f"role_id: {role}" not in value or f"version: {version}" not in value:
+        raise ValueError(f"Persona identity mismatch: {role}/{version}")
+    if len(re.findall(r"^### Good-[1-5]$", value, re.MULTILINE)) != 5:
+        raise ValueError(f"{role}/{version} persona must have exactly five good examples")
+    if len(re.findall(r"^### Bad-[1-5]$", value, re.MULTILINE)) != 5:
+        raise ValueError(f"{role}/{version} persona must have exactly five bad examples")

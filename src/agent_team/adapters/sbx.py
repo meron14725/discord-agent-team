@@ -99,7 +99,7 @@ class SbxRunner:
                                    "--find-links", "/tmp/team-test-runtime/wheels",
                                    "-r", "/tmp/team-test-runtime/requirements.txt"], request.timeout)
         await self.command(job_id, ["exec", "--user", "root", name, "install", "-m", "755",
-                                   "/tmp/team-test-runtime/bin/patch", "/usr/local/bin/patch"])
+                                   "/tmp/team-test-runtime/bin/patch", "/usr/bin/patch"])
         await self.command(job_id, ["exec", "--user", "root", name, "ln", "-sf",
                                    "/usr/bin/python3", "/usr/local/bin/python"])
 

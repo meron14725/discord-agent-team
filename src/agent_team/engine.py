@@ -542,7 +542,8 @@ class Engine:
                 )
             # Tests and loaders need their existing configuration/data as read-only
             # inputs. This does not add any write exceptions for those files.
-            support_paths = ["pyproject.toml", "uv.lock", "prompts/*", "vendor/*"] if scoped_paths else []
+            support_paths = ["pyproject.toml", "uv.lock", "prompts/*", "vendor/*", "docker/seccomp*.json",
+                             "compose.yaml", "compose.sandbox-test.yaml", "THIRD_PARTY-LICENSES.md"] if scoped_paths else []
             source_repo = repo.model_copy(update={"allowed_paths": repo.allowed_paths + scoped_paths + support_paths})
             model_snapshot = self.github.source_context(source_repo, head or base)
             files = model_snapshot["files"]

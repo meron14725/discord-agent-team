@@ -316,7 +316,7 @@ def test_maintenance_test_runtime_installs_offline_and_only_when_authorized(tmp_
     install = runner.calls[1]
     assert '--no-index' in install and '--require-hashes' in install
     assert install[:4] == ['exec','--user','root','sandbox']
-    assert runner.calls[2][-2:] == ['/tmp/team-test-runtime/bin/patch','/usr/local/bin/patch']
+    assert runner.calls[2][-2:] == ['/tmp/team-test-runtime/bin/patch','/usr/bin/patch']
     assert runner.calls[3][-2:] == ['/usr/bin/python3','/usr/local/bin/python']
     (tmp_path / 'requirements.txt').unlink()
     with pytest.raises(GuardError, match='unavailable'):

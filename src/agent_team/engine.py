@@ -1208,7 +1208,7 @@ class Engine:
                 _, job = self.current(s, job_id, fence)
                 saved = job.data.get("response")
                 saved_request = job.data.get("request")
-            if saved:
+            if saved_request:
                 request = RunRequest.model_validate(saved_request)
             else:
                 # Fetching a repository can outlive the lease before the model starts.
@@ -1222,6 +1222,9 @@ class Engine:
                 finally:
                     if not preparation.done():
                         preparation.cancel()
+                with self.db.transaction() as session:
+                    _, current_job = self.current(session, job_id, fence)
+                    current_job.data = {**current_job.data, "request": request.model_dump()}
             phase = "run"
             execution = asyncio.create_task(self.runner.run(request)) if not saved else None
             if execution:

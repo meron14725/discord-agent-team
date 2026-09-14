@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 
@@ -33,6 +34,36 @@ def test_slow_preparation_keeps_job_lease_alive(team, monkeypatch):
         job = session.get(Job, claim[0])
         assert job.status == "done"
         assert job.attempt == 1
+    assert service.status(task["id"])["state"] == "AwaitingSpecApproval"
+
+
+def test_transient_run_failure_reuses_saved_prepared_request(team, monkeypatch):
+    _, db, _, service, engine, command = team
+    task = command("request", repo="demo", text="reuse prepared context")
+    prepare = engine.prepare
+    run = engine.runner.run
+    calls = []
+
+    def counted_prepare(*args):
+        calls.append(args)
+        return prepare(*args)
+
+    async def fail_once(_request):
+        raise httpx.ConnectError("temporary test failure")
+
+    monkeypatch.setattr(engine, "prepare", counted_prepare)
+    monkeypatch.setattr(engine.runner, "run", fail_once)
+    step(engine)
+    with db.transaction() as session:
+        job = session.scalar(select(Job).where(Job.task_id == task["id"]))
+        assert job.status == "failed"
+        assert job.data.get("request")
+        job.status, job.owner, job.lease, job.attempt = "queued", "", 0, 0
+        session.get(Task, task["id"]).state = "Queued"
+
+    monkeypatch.setattr(engine.runner, "run", run)
+    step(engine)
+    assert len(calls) == 1
     assert service.status(task["id"])["state"] == "AwaitingSpecApproval"
 
 

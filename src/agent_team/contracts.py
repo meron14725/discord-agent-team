@@ -229,6 +229,7 @@ class Result(Strict):
 
 
 class RunRequest(Strict):
+    maintenance_paths: list[str] = Field(default_factory=list, max_length=100)
     auth_mode: Literal["chatgpt", "api_key"] = "chatgpt"
     job_id: str
     role: RoleId

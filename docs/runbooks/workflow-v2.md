@@ -88,3 +88,9 @@ Issue更新後、要件整理中・要件確認待ち・承認を失効した確
 同じ読込障害がVM復旧ジャーナルにも発生したため、状態保存先も`TEAM_WORKER_STATE_ROOT`で分離する。現行Macは`~/.local/share/discord-agent-team/state`。移行時はworkerを停止し、`sbx ls`で残存sandboxがないことを確認した。旧ジャーナルは削除しない。残存sandboxがある環境では、ジャーナルを移行・照合するまで空の状態で起動してはならない。
 
 v2の接続断（`ConnectError`）は、認証付きworkerヘルスチェックで役割・空き容量・正常状態を確認後、同一jobについて1回だけ自動再開する。最新jobの版一致・実行予算・未保存応答を確認し、特権操作とPaused/Cancelledを対象にしない。HTTP 500全般、承認不足、秘密情報検査違反を接続断とみなしてはならない。
+
+## 人格実装の案件限定メンテナンス許可
+
+人格追加は通常の`prompts/*`変更禁止と衝突する。オーナーが承認した保守案件に限り、信頼済み設定`maintenance_authorizations[task_id]`へrepository、requirements_hash、plan_hash、owner_id、pathsを記録する。pathsは承認済み計画から抽出した正確なファイル名のみで、globは不可。人格定義`prompts/personas/<role>/vN/PERSONA.md`、設定例`config.example.yaml`、src/testsの統合変更に限定する。会社規則、AGENTS、CI、実設定、秘密情報は例外対象外。
+
+制御側で案件・要件・計画・オーナーを照合してからworkerへ渡し、モデル出力内の自称許可は採用しない。workerの差分適用時と制御側の成果物検査時に同じパス範囲を検証する。別版への変更時は許可を再確認する。通常案件の禁止事項・レビュー・マージ・本番反映の条件は変えない。

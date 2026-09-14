@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..contracts import Result, RunRequest, RunResponse, TestEvidence
 from ..policy import GuardError, safe_path
-from .codex import POLICY, ROLE, SPECIALIST_ROLE, CodexRunner, codex_output_schema
+from .codex import ROLE, SPECIALIST_ROLE, CodexRunner, codex_output_schema, execution_policy
 
 IMAGE = "docker/sandbox-templates@sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fbfc61f47568092a93fb9dc88b0"
 IDENTITY = ("task_id", "spec_version", "spec_hash", "head_sha", "base_sha")
@@ -289,7 +289,7 @@ else:
             ),
         )
         prompt = (
-            POLICY
+            execution_policy(request)
             + "\n"
             + ROLE[request.kind]
             + ("\n" + SPECIALIST_ROLE[request.role] if request.kind == "respond" else "")
@@ -360,7 +360,7 @@ else:
             if not result.patches:
                 raise GuardError("Brokered implementation returned no patch proposal")
             for proposal in result.patches:
-                self.commands.patch_paths(proposal.patch)
+                self.commands.patch_paths(proposal.patch, request.maintenance_paths)
                 patch_output = await self.command(
                     job_id,
                     [

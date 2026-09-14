@@ -33,7 +33,7 @@ from .explanations import (
     bind_explanation,
 )
 from .planning import REQUIRED_PLAN_SECTIONS, validate_plan, validate_review_coverage
-from .policy import GuardError, digest, merge_gate, validate_files, validate_review
+from .policy import GuardError, digest, maintenance_paths, merge_gate, validate_files, validate_review
 from .prompt_context import load_agent_prompt_context, load_vendor_skill_context
 from .service import STOPPED, enqueue, invalidate, notify, transition
 from .workflow import WorkflowV2Service
@@ -364,6 +364,7 @@ class Engine:
         )
 
     def prepare_v2(self, job_id, fence, task, job):
+        scoped_paths = maintenance_paths(self.settings, task) if job.kind in {"implement", "fix", "review"} else []
         repo = self.settings.repo_for(task)
         kind, role = job.kind, job.role
         provisioned_now = repo.per_task and not task.data.get("provisioned")
@@ -537,7 +538,8 @@ class Engine:
                     "Give each required_acceptance_ids item its own mapping to changes and tests; "
                     "do not abbreviate acceptance IDs as a range."
                 )
-            model_snapshot = self.github.source_context(repo, head or base)
+            source_repo = repo.model_copy(update={"allowed_paths": repo.allowed_paths + scoped_paths})
+            model_snapshot = self.github.source_context(source_repo, head or base)
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]
         context = {
@@ -546,6 +548,7 @@ class Engine:
             **context,
         }
         return RunRequest(
+            maintenance_paths=scoped_paths if kind in {"implement", "fix"} else [],
             auth_mode=self.settings.auth_mode,
             job_id=job_id,
             role=role,
@@ -967,7 +970,8 @@ class Engine:
             return
         if kind in {"implement", "fix"}:
             files = dict(response.files)
-            validate_files(files, self.settings, task.id, task.data["requirements_hash"])
+            validate_files(files, self.settings, task.id, task.data["requirements_hash"],
+                           maintenance=maintenance_paths(self.settings, task))
             protected_plan = task.data["plan_path"]
             if protected_plan in files:
                 raise GuardError("Approved implementation plan is immutable")

@@ -73,7 +73,16 @@ class WorkflowV2(BaseModel):
         return self
 
 
+class MaintenanceAuthorization(BaseModel):
+    repository: str
+    requirements_hash: str
+    plan_hash: str
+    owner_id: str
+    paths: list[str]
+
+
 class Settings(BaseModel):
+    maintenance_authorizations: dict[str, MaintenanceAuthorization] = Field(default_factory=dict)
     github_reviewer_app: ReviewerApp | None = None
     mode: Literal["mock", "live"] = "mock"
     merge_mode: Literal["disabled", "human_gate", "auto_low_risk"] = "human_gate"

@@ -37,6 +37,7 @@ class FixedFactEnvelope:
     approval_state: str
     approval_reason: str
     handoff_roles: tuple[str, ...]
+    handoff_instructions: tuple[str, ...]
     next_step: str
     identifiers: tuple[tuple[str, str], ...]
     targets: tuple[tuple[str, str], ...]
@@ -52,10 +53,15 @@ class FixedFactEnvelope:
         identifiers: Mapping[str, Any] | None = None,
         targets: Mapping[str, Any] | None = None,
         quantities: Mapping[str, Any] | None = None,
+        next_step: str | None = None,
     ):
         approval_state = "waiting" if getattr(decision, "action") == "request_approval" else "none"
         handoffs = getattr(decision, "handoffs", ()) or getattr(decision, "delegations", ())
         roles = tuple(item.role for item in handoffs)
+        instructions = tuple(
+            getattr(item, "instruction", "") for item in handoffs
+            if getattr(item, "instruction", "")
+        )
         next_steps = {
             "clarify": "owner_answer",
             "request_approval": "owner_approval",
@@ -78,7 +84,8 @@ class FixedFactEnvelope:
             "approval_state": approval_state,
             "approval_reason": getattr(decision, "approval_reason", ""),
             "handoff_roles": roles,
-            "next_step": next_steps[decision.action],
+            "handoff_instructions": instructions,
+            "next_step": next_step or next_steps[decision.action],
             "identifiers": stable(identifiers),
             "targets": stable(targets),
             "quantities": stable(quantities),
@@ -146,12 +153,14 @@ def deterministic_fallback(envelope: FixedFactEnvelope) -> str:
         "coordinator_task_registration": "次は統括が正式案件を提案します。",
         "task_registration": "次は正式案件の登録です。",
         "complete": "次の自動操作はありません。",
-    }[envelope.next_step]
+    }.get(envelope.next_step, "次工程: " + envelope.next_step + "。")
     details = []
     if envelope.approval_reason:
         details.append("承認理由: " + envelope.approval_reason + "。")
     if envelope.handoff_roles:
         details.append("引き継ぎ先: " + ", ".join(envelope.handoff_roles) + "。")
+    if envelope.handoff_instructions:
+        details.append("引き継ぎ内容: " + " / ".join(envelope.handoff_instructions) + "。")
     if envelope.task_summary:
         details.append("案件要約: " + envelope.task_summary + "。")
     if envelope.continuation_instruction:
@@ -200,9 +209,15 @@ def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characte
     if envelope.execution_state == "not_run" and COMPLETED_RE.search(text):
         raise ValueError("not_run_contradiction")
     sentences = [part for part in re.split(r"(?<=[。！？!?])|\n+", text) if part.strip()]
-    if (len(sentences) > 4 and text != deterministic_fallback(envelope)
-        and "[detail:safety]" not in text and "[detail:verification]" not in text):
-        raise ValueError("too_many_sentences")
+    if len(sentences) > 4 and text != deterministic_fallback(envelope):
+        safety_detail = "[detail:safety]" in text and any(
+            value in text for value in (envelope.approval_reason, "承認", "安全") if value
+        )
+        verification_detail = "[detail:verification]" in text and any(
+            value in text for value in ("検証", envelope.execution_state) if value
+        )
+        if not safety_detail and not verification_detail:
+            raise ValueError("too_many_sentences")
     # Deterministic control state must remain visible in every final rendering.
     expected = deterministic_fallback(envelope).split("。")[-2]
     if expected and expected not in text:
@@ -210,11 +225,17 @@ def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characte
     # Deterministic facts are rendered by the control block, then checked as a
     # whole.  The formatter never gets to replace these values.
     control = deterministic_fallback(envelope)
-    for fact in (envelope.approval_reason, envelope.task_summary, envelope.continuation_instruction, *envelope.handoff_roles):
+    for fact in (envelope.approval_reason, envelope.task_summary,
+                 envelope.continuation_instruction, *envelope.handoff_roles,
+                 *envelope.handoff_instructions):
         if fact and fact not in text:
             raise ValueError("fixed_fact_missing")
     if envelope.change_plan and "変更計画:" not in text:
         raise ValueError("change_plan_missing")
+    for values in (envelope.identifiers, envelope.targets, envelope.quantities, envelope.change_plan):
+        for key, value in values:
+            if key not in text or value not in text:
+                raise ValueError("structured_fact_missing")
 
 
 async def render_persona_reply(
@@ -228,6 +249,7 @@ async def render_persona_reply(
     identifiers: Mapping[str, Any] | None = None,
     targets: Mapping[str, Any] | None = None,
     quantities: Mapping[str, Any] | None = None,
+    next_step: str | None = None,
     timeout_seconds: float = 2.0,
     max_characters: int = 1800,
 ) -> PersonaRenderResult:
@@ -235,6 +257,7 @@ async def render_persona_reply(
     envelope = FixedFactEnvelope.from_decision(
         role_id, decision, execution_state=execution_state,
         identifiers=identifiers, targets=targets, quantities=quantities,
+        next_step=next_step,
     )
     control = deterministic_fallback(envelope)
     reason = ""
@@ -256,12 +279,13 @@ async def render_persona_reply(
         try:
             validate_final_reply(body, envelope, max_characters=max_characters)
         except Exception as exc:
-            # A bad operational limit must not leak an unvalidated reply.  Empty
-            # text is the defined transport stop signal; callers must not send it.
-            return PersonaRenderResult(
-                "", PersonaAudit(role_id, persona.version, True,
-                f"fallback_validation:{exc}", envelope.fact_digest, "blocked")
-            )
+            # Configuration enforces at least 100 characters.  This final,
+            # fact-derived sentence is deliberately below that bound and keeps
+            # delivery alive without reusing untrusted model prose.
+            state = "未実行" if envelope.execution_state == "not_run" else envelope.execution_state
+            body = f"状態: {state}。次工程: {envelope.next_step}。"
+            validate_final_reply(body, envelope, max_characters=max_characters)
+            reason = f"fallback_validation:{exc}"
     return PersonaRenderResult(
         body,
         PersonaAudit(role_id, persona.version, bool(reason), reason, envelope.fact_digest, "passed"),

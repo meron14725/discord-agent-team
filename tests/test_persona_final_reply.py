@@ -37,3 +37,20 @@ def test_all_authoritative_specialist_fields_survive_fallback_and_digest():
     assert "検証を実行" in result.text
     assert "evt-1" in result.text and "sample" in result.text
     assert len(result.audit.fact_digest) == 64
+
+
+def test_handoff_instruction_and_actual_next_step_are_fixed_facts():
+    decision = SpecialistDecision(
+        action="handoff", reply="引き継ぎます", task_summary="", approval_reason="",
+        continuation_instruction="", sre_plan=None,
+        handoffs=[{"role": "security_sre", "reason": "安全確認", "instruction": "監査ログを確認"}],
+    )
+    result = asyncio.run(render_persona_reply(
+        decision=decision, role_id="backend_integrator",
+        persona=PersonaDefinition("backend_integrator", "v1", "bad"),
+        formatter=lambda request: "", next_step="次: 統括が安全担当へ引き継ぎ",
+    ))
+    assert result.audit.fallback
+    assert "security_sre" in result.text
+    assert "監査ログを確認" in result.text
+    assert "次: 統括が安全担当へ引き継ぎ" in result.text

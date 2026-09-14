@@ -47,7 +47,8 @@ def test_real_formatter_uses_selected_persona_and_differs_by_role():
     assert len(outputs) == 4
 
 
-def test_fallback_validation_failure_returns_transport_stop_signal():
-    result = render(lambda request: "", max_characters=1)
-    assert result.text == ""
-    assert result.audit.final_validation == "blocked"
+def test_fallback_is_delivered_with_the_smallest_configured_limit():
+    result = render(lambda request: "", max_characters=100)
+    assert result.text
+    assert result.audit.fallback
+    assert result.audit.final_validation == "passed"

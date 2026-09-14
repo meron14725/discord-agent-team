@@ -753,6 +753,10 @@ async def serve():
                                 "succeeded" if validated_coordinator.action == "task" else "not_run"
                             ),
                             identifiers={"event_id": message.id},
+                            next_step=(
+                                "task_registered" if validated_coordinator.action == "task"
+                                else None
+                            ),
                             timeout_seconds=settings.personas.timeout_seconds,
                             max_characters=settings.personas.max_characters,
                         )
@@ -923,7 +927,19 @@ async def serve():
                                             prompt_context.personas[role_id],
                                         ),
                                         formatter=persona_formatter,
-                                        control_blocks=((attention.strip(),) if attention else ()),
+                                        control_blocks=tuple(
+                                            part for part in (attention.strip(), next_step) if part
+                                        ),
+                                        execution_state="not_run",
+                                        identifiers={
+                                            "event_id": (
+                                                f"{message.id}-{delegated['role']}-"
+                                                f"{handoff_depth}-{handoff_round}-{continuation_turn}"
+                                            )
+                                        },
+                                        targets={"role": delegated["role"]},
+                                        quantities={"continuation_turn": continuation_turn},
+                                        next_step=next_step,
                                         timeout_seconds=settings.personas.timeout_seconds,
                                         max_characters=settings.personas.max_characters,
                                     )

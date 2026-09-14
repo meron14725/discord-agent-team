@@ -486,6 +486,12 @@ class Engine:
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,
             "trusted_role_policy": self.prompt_context.role_policies[role],
+            "trusted_instruction_priority": [
+                "trusted_company_policy",
+                "trusted_role_policy",
+                "structured_output_contract",
+                "trusted_persona",
+            ],
             "trusted_persona": self.prompt_context.personas.get(role, ""),
             "trusted_persona_version": self.prompt_context.persona_versions.get(role, ""),
             **context,

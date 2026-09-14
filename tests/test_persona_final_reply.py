@@ -1,8 +1,15 @@
 import asyncio
+
 import pytest
 
 from agent_team.contracts import SpecialistDecision
-from agent_team.persona import FixedFactEnvelope, PersonaDefinition, render_persona_reply, validate_final_reply
+from agent_team.persona import (
+    FixedFactEnvelope,
+    PersonaDefinition,
+    fixed_fact_block,
+    render_persona_reply,
+    validate_final_reply,
+)
 
 
 def test_composed_original_block_is_validated_before_delivery():
@@ -70,3 +77,33 @@ def test_control_block_is_a_complete_exact_envelope_not_substring_evidence():
         validate_final_reply(tampered, FixedFactEnvelope.from_decision(
             "security_sre", decision, identifiers={"event_id": "evt-9"},
             targets={"channel": "42"}, quantities={"count": 2}), max_characters=2000)
+
+
+@pytest.mark.parametrize(
+    "decision,text,error",
+    [
+        (
+            SpecialistDecision(action="request_approval", reply="待機", task_summary="", approval_reason="危険", continuation_instruction="", sre_plan=None, handoffs=[]),
+            "承認済みなので進めます。",
+            "approval_waiting_contradiction",
+        ),
+        (
+            SpecialistDecision(action="reply", reply="回答", task_summary="", approval_reason="", continuation_instruction="", sre_plan=None, handoffs=[]),
+            "次は担当へ引き継ぎます。",
+            "handoff_contradiction",
+        ),
+        (
+            SpecialistDecision(action="reply", reply="回答", task_summary="", approval_reason="", continuation_instruction="", sre_plan=None, handoffs=[]),
+            "TASKを登録しました。",
+            "task_registration_contradiction",
+        ),
+    ],
+)
+def test_presentation_semantic_control_claims_cannot_conflict(decision, text, error):
+    envelope = FixedFactEnvelope.from_decision("security_sre", decision)
+    with pytest.raises(ValueError, match=error):
+        validate_final_reply(
+            text + "\n" + fixed_fact_block(envelope),
+            envelope,
+            max_characters=2000,
+        )

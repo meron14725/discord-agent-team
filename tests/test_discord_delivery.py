@@ -1,11 +1,16 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
-from agent_team.adapters.discord import send_chunked
-from agent_team.contracts import SpecialistDecision
+from agent_team.adapters.discord import (
+    apply_persona_for_delivery,
+    replace_with_chunked,
+    send_chunked,
+)
+from agent_team.contracts import CoordinationDecision, DiscordSREPlan, SpecialistDecision
 from agent_team.discord_delivery import (
     discord_parts,
     specialist_next_step,
@@ -13,6 +18,7 @@ from agent_team.discord_delivery import (
     task_next_step,
     task_waits_for_owner,
 )
+from agent_team.persona import PersonaDefinition, persona_formatter, render_persona_reply
 
 
 def decision(action="reply", **changes):
@@ -78,6 +84,218 @@ def test_chunked_retry_only_sends_a_missing_part():
         assert len(channel.messages) == 3
         assert [message.id for message in retried] == [first[0].id, 4, first[2].id]
         assert missing.id == 2
+
+    asyncio.run(scenario())
+
+
+def test_coordinator_replaces_placeholder_then_uses_common_marked_retry_boundary():
+    class Message:
+        def __init__(self, message_id, author_id, content=""):
+            self.id = message_id
+            self.author = SimpleNamespace(id=author_id)
+            self.content = content
+            self.edits = []
+
+        async def edit(self, **kwargs):
+            self.content = kwargs["content"]
+            self.edits.append(kwargs)
+            return self
+
+    class Channel:
+        def __init__(self, placeholder):
+            self.messages = [placeholder]
+            self.next_id = 2
+
+        async def history(self, limit):
+            for message in reversed(self.messages[-limit:]):
+                yield message
+
+        async def send(self, content, **kwargs):
+            message = Message(self.next_id, 7, content)
+            message.kwargs = kwargs
+            self.next_id += 1
+            self.messages.append(message)
+            return message
+
+    async def scenario():
+        placeholder = Message(1, 7, "内容を確認しています…")
+        channel = Channel(placeholder)
+        text = "A" * 1800 + "\n\n" + "B" * 1800
+        sent = await replace_with_chunked(
+            channel,
+            placeholder,
+            text,
+            event_id="chat-1-coordinator",
+            bot_user_id=7,
+        )
+        assert sent[0] is placeholder
+        assert len(sent) > 1
+        assert f"part:1/{len(sent)}" in placeholder.content
+        first_mentions = placeholder.edits[0]["allowed_mentions"]
+        assert (first_mentions.everyone, first_mentions.users, first_mentions.roles) == (
+            False,
+            False,
+            False,
+        )
+
+        missing = sent[1]
+        channel.messages.remove(missing)
+        retried = await send_chunked(
+            channel,
+            text,
+            event_id="chat-1-coordinator",
+            bot_user_id=7,
+        )
+        assert retried[0] is placeholder
+        assert retried[1].id == len(sent) + 1
+        retry_mentions = retried[1].kwargs["allowed_mentions"]
+        assert (retry_mentions.everyone, retry_mentions.users, retry_mentions.roles) == (
+            False,
+            False,
+            False,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_disabled_persona_preserves_all_six_legacy_delivery_cases_without_formatter_call():
+    sre_plan = DiscordSREPlan(
+        schema_version=1,
+        operation="create_text_channel",
+        guild_id="guild",
+        target_id="",
+        parent_category_id="category",
+        name="project-test",
+        topic="",
+        archive=None,
+        reason="検証用チャンネルが必要",
+        impact="カテゴリ権限を継承する",
+        verification="作成後の親カテゴリを確認する",
+        rollback="利用を停止して削除承認を求める",
+    )
+    cases = [
+        CoordinationDecision(action="reply", reply="通常返信", task_summary="", delegations=[]),
+        CoordinationDecision(
+            action="delegate", reply="担当へ依頼", task_summary="",
+            delegations=[{"role": "upstream", "instruction": "要件を確認する"}],
+        ),
+        decision("clarify", reply="一点確認します？"),
+        decision("request_approval", reply="承認待ちです。", approval_reason="外部変更"),
+        decision("continue", reply="調査を続けます。", continuation_instruction="次のログを見る"),
+        decision(
+            "request_approval",
+            reply="Discord変更は未実行です。",
+            approval_reason="Discord変更",
+            sre_plan=sre_plan,
+        ),
+    ]
+
+    async def scenario():
+        calls = []
+
+        def forbidden_formatter(request):
+            calls.append(request)
+            raise AssertionError("disabled persona called formatter")
+
+        for index, item in enumerate(cases):
+            original = f"legacy-body-{index}"
+            body, audit = await apply_persona_for_delivery(
+                enabled=False,
+                original_body=original,
+                decision=item,
+                formatter=forbidden_formatter,
+            )
+            assert body == original
+            assert audit is None
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
+def test_enabled_four_roles_keep_role_version_and_stable_delivery_markers():
+    roles = ("coordinator", "cto", "backend_integrator", "security_sre")
+
+    async def scenario():
+        for role in roles:
+            content = Path(f"prompts/personas/{role}/v1/PERSONA.md").read_text()
+            item = (
+                CoordinationDecision(
+                    action="reply", reply="確認しました。", task_summary="", delegations=[]
+                )
+                if role == "coordinator"
+                else decision("reply", reply="確認しました。")
+            )
+            body, audit = await apply_persona_for_delivery(
+                enabled=True,
+                original_body=item.reply,
+                decision=item,
+                role_id=role,
+                persona=PersonaDefinition(role, "v1", content),
+                formatter=persona_formatter,
+            )
+            assert audit and (audit.role_id, audit.version) == (role, "v1")
+            first = discord_parts(body, "same-event-" + role)
+            second = discord_parts(body, "same-event-" + role)
+            assert [part.marker for part in first] == [part.marker for part in second]
+
+    asyncio.run(scenario())
+
+
+def test_every_persona_failure_mode_continues_once_through_discord_delivery():
+    class Channel:
+        def __init__(self):
+            self.messages = []
+
+        async def history(self, limit):
+            for message in reversed(self.messages[-limit:]):
+                yield message
+
+        async def send(self, content, **kwargs):
+            message = SimpleNamespace(
+                id=len(self.messages) + 1,
+                content=content,
+                author=SimpleNamespace(id=7),
+                kwargs=kwargs,
+            )
+            self.messages.append(message)
+            return message
+
+    async def timeout_formatter(request):
+        await asyncio.sleep(0.02)
+        return request.safe_source_reply
+
+    async def scenario():
+        channel = Channel()
+        persona = PersonaDefinition("cto", "v1", "role_id: cto\n## Voice\n簡潔")
+        formatters = {
+            "empty": lambda request: "",
+            "invalid": lambda request: "別内容",
+            "over-limit": lambda request: "x" * 3000 + request.safe_source_reply,
+            "internal-error": lambda request: 1 / 0,
+            "timeout": timeout_formatter,
+        }
+        for name, formatter in formatters.items():
+            rendered = await render_persona_reply(
+                decision=decision(),
+                role_id="cto",
+                persona=persona,
+                formatter=formatter,
+                timeout_seconds=0.001,
+                max_characters=100,
+                identifiers={"evidence": "x" * 2500} if name == "over-limit" else None,
+            )
+            assert rendered.audit.fallback
+            before = len(channel.messages)
+            first = await send_chunked(
+                channel, rendered.text, event_id="fallback-" + name, bot_user_id=7
+            )
+            after_first = len(channel.messages)
+            second = await send_chunked(
+                channel, rendered.text, event_id="fallback-" + name, bot_user_id=7
+            )
+            assert after_first > before
+            assert len(channel.messages) == after_first
+            assert [message.id for message in first] == [message.id for message in second]
 
     asyncio.run(scenario())
 

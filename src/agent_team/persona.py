@@ -22,8 +22,11 @@ COMPLETED_RE = re.compile(r"(?:実行|変更|作業|送信|公開|マージ).{0,
 FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
 NOT_RUN_RE = re.compile(r"(?:未実行|実行していません|not[_ -]?run)", re.IGNORECASE)
 SECRET_RE = re.compile(r"(?i)(?:authorization:\s*bearer|api[_-]?key\s*[:=]|token\s*[:=])\s*\S+")
+APPROVAL_WAIT_RE = re.compile(r"(?:承認待ち|承認が必要|approval\s+required)", re.IGNORECASE)
+APPROVAL_DONE_RE = re.compile(r"(?:承認済み|承認は不要|承認不要|approved)", re.IGNORECASE)
+HANDOFF_RE = re.compile(r"(?:引き継ぎ|委任)(?:ます|ました|済み)")
+TASK_REGISTERED_RE = re.compile(r"(?:案件|タスク|TASK).{0,12}(?:登録|作成)(?:済み|しました)")
 CONTROL_PREFIX = "[fixed-facts]"
-DISCORD_CONTENT_LIMIT = 2000
 
 
 @dataclass(frozen=True)
@@ -80,7 +83,8 @@ class FixedFactEnvelope:
         plan_facts = plan.model_dump(mode="json") if plan is not None else {}
         # Only explicit, already validated values enter the envelope.  No fact is
         # inferred from free-form reply text.
-        stable = lambda values: tuple(sorted((str(k), str(v)) for k, v in (values or {}).items()))
+        def stable(values):
+            return tuple(sorted((str(k), str(v)) for k, v in (values or {}).items()))
         facts = {
             "role_id": role_id,
             "action": decision.action,
@@ -118,6 +122,7 @@ class PersonaAudit:
     fallback_reason: str
     fact_digest: str
     final_validation: str
+    invariant_checks: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -229,26 +234,68 @@ def persona_formatter(request: PersonaFormatRequest) -> str:
         raise ValueError("unsupported_persona_role") from exc
 
 
-def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characters: int) -> None:
+def _validate_candidate(candidate: str, source_reply: str) -> None:
+    """Prove the persona layer only adds a short, non-controlling role marker."""
+    if not source_reply or candidate.count(source_reply) != 1 or not candidate.endswith(source_reply):
+        raise ValueError("source_reply_changed")
+    prefix = candidate[: -len(source_reply)]
+    if len(prefix) > 64 or QUESTION_RE.search(prefix):
+        raise ValueError("persona_prefix_invalid")
+    if any(pattern.search(prefix) for pattern in (
+        COMPLETED_RE, FAILED_RE, NOT_RUN_RE, APPROVAL_WAIT_RE,
+        APPROVAL_DONE_RE, HANDOFF_RE, TASK_REGISTERED_RE,
+    )):
+        raise ValueError("persona_prefix_contains_control_claim")
+
+
+def validate_final_reply(
+    text: str, envelope: FixedFactEnvelope, *, max_characters: int
+) -> tuple[str, ...]:
+    checks = []
     if not text.strip():
         raise ValueError("empty")
     if len(text) > max_characters:
         raise ValueError("over_limit")
     if SECRET_RE.search(text):
         raise ValueError("secret")
+    checks.append("secret_absent")
     lines = text.splitlines()
     control_lines = [line for line in lines if line.startswith(CONTROL_PREFIX)]
     if control_lines != [fixed_fact_block(envelope)]:
         raise ValueError("fixed_fact_block_mismatch")
+    checks.append("control_block_exact")
     presentation = "\n".join(line for line in lines if not line.startswith(CONTROL_PREFIX))
     if len(QUESTION_RE.findall(presentation)) > 1:
         raise ValueError("multiple_questions")
+    checks.append("question_limit")
     if envelope.execution_state == "not_run" and COMPLETED_RE.search(presentation):
         raise ValueError("not_run_contradiction")
     if envelope.execution_state == "succeeded" and (FAILED_RE.search(presentation) or NOT_RUN_RE.search(presentation)):
         raise ValueError("succeeded_contradiction")
     if envelope.execution_state == "failed" and (COMPLETED_RE.search(presentation) or NOT_RUN_RE.search(presentation)):
         raise ValueError("failed_contradiction")
+    checks.append("execution_consistent")
+    if envelope.approval_state == "waiting":
+        if APPROVAL_DONE_RE.search(presentation):
+            raise ValueError("approval_waiting_contradiction")
+    elif APPROVAL_WAIT_RE.search(presentation):
+        raise ValueError("approval_state_contradiction")
+    checks.append("approval_consistent")
+    if envelope.action not in {"handoff", "delegate"} and HANDOFF_RE.search(presentation):
+        raise ValueError("handoff_contradiction")
+    if envelope.action not in {"task", "recommend_task"} and TASK_REGISTERED_RE.search(presentation):
+        raise ValueError("task_registration_contradiction")
+    checks.append("action_consistent")
+    next_step_conflicts = {
+        "owner_answer": ("次の自動操作はありません", "承認待ち"),
+        "owner_approval": ("次の自動操作はありません", "回答待ち"),
+        "control_handoff": ("次の自動操作はありません",),
+        "control_delegation": ("次の自動操作はありません",),
+        "complete": ("回答待ち", "承認待ち", "引き継ぎます", "委任します"),
+    }
+    if any(value in presentation for value in next_step_conflicts.get(envelope.next_step, ())):
+        raise ValueError("next_step_contradiction")
+    checks.append("next_step_consistent")
     sentences = [part for part in re.split(r"(?<=[。！？!?])|\n+", presentation) if part.strip()]
     fallback_presentation = deterministic_fallback(envelope).split("\n" + CONTROL_PREFIX, 1)[0]
     if len(sentences) > 4 and presentation != fallback_presentation:
@@ -260,6 +307,8 @@ def validate_final_reply(text: str, envelope: FixedFactEnvelope, *, max_characte
         )
         if not safety_detail and not verification_detail:
             raise ValueError("too_many_sentences")
+    checks.append("sentence_policy")
+    return tuple(checks)
 
 
 async def render_persona_reply(
@@ -292,21 +341,28 @@ async def render_persona_reply(
             candidate = await asyncio.wait_for(candidate, timeout_seconds)
         if not isinstance(candidate, str) or not candidate.strip():
             raise ValueError("empty_or_invalid_formatter_result")
+        _validate_candidate(candidate, decision.reply)
         body = "\n\n".join(part for part in (str(candidate), *control_blocks, control) if part)
-        validate_final_reply(body, envelope, max_characters=max_characters)
+        checks = validate_final_reply(body, envelope, max_characters=max_characters)
     except asyncio.TimeoutError:
         reason = "timeout"
     except Exception as exc:
         reason = str(exc) or "internal_error"
     if reason:
         body = deterministic_fallback(envelope)
-        # The configured bound limits model presentation.  A complete factual
-        # fallback may exceed it, but can never exceed Discord's hard limit.
-        validate_final_reply(
-            body, envelope, max_characters=max(max_characters, len(body))
-            if len(body) <= DISCORD_CONTENT_LIMIT else DISCORD_CONTENT_LIMIT,
-        )
+        # The configured bound limits model presentation. A complete factual
+        # fallback is allowed to exceed one Discord message because the common
+        # delivery boundary deterministically splits it into marked parts.
+        checks = validate_final_reply(body, envelope, max_characters=max(max_characters, len(body)))
     return PersonaRenderResult(
         body,
-        PersonaAudit(role_id, persona.version, bool(reason), reason, envelope.fact_digest, "passed"),
+        PersonaAudit(
+            role_id,
+            persona.version,
+            bool(reason),
+            reason,
+            envelope.fact_digest,
+            "passed",
+            checks,
+        ),
     )

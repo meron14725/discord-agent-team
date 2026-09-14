@@ -100,6 +100,12 @@ def _validate_persona(value: str, role: str, version: str) -> None:
             raise ValueError(f"{role}/{version} persona missing {heading}")
     if f"role_id: {role}" not in value or f"version: {version}" not in value:
         raise ValueError(f"Persona identity mismatch: {role}/{version}")
+    marker = re.search(r"^presentation_marker:\s*([^\n]+)$", value, re.MULTILINE)
+    if marker and (
+        len(marker.group(1)) > 32
+        or any(token in marker.group(1) for token in ("?", "？", "承認", "完了", "実行", "失敗", "引き継ぎ", "委任"))
+    ):
+        raise ValueError(f"Unsafe persona presentation marker: {role}/{version}")
     if len(re.findall(r"^### Good-[1-5]$", value, re.MULTILINE)) != 5:
         raise ValueError(f"{role}/{version} persona must have exactly five good examples")
     if len(re.findall(r"^### Bad-[1-5]$", value, re.MULTILINE)) != 5:

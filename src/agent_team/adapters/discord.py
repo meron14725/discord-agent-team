@@ -118,10 +118,11 @@ async def send_chunked(
     event_id: str,
     bot_user_id: int | None = None,
     first_kwargs: dict | None = None,
+    known_messages: dict[str, object] | None = None,
 ):
     """Send every deterministic part once and return messages in content order."""
     parts = discord_parts(text, event_id)
-    existing_by_marker = {}
+    existing_by_marker = dict(known_messages or {})
     if bot_user_id is not None:
         async for candidate in channel.history(limit=100):
             if candidate.author.id != bot_user_id:
@@ -138,6 +139,53 @@ async def send_chunked(
             message = await channel.send(part.content, **kwargs)
         posted.append(message)
     return posted
+
+
+async def replace_with_chunked(
+    channel,
+    placeholder,
+    text: str,
+    *,
+    event_id: str,
+    bot_user_id: int | None = None,
+    allowed_mentions=None,
+):
+    """Replace a progress message, then use the common idempotent part boundary."""
+    parts = discord_parts(text, event_id)
+    mentions = allowed_mentions or discord.AllowedMentions.none()
+    await placeholder.edit(content=parts[0].content, allowed_mentions=mentions)
+    return await send_chunked(
+        channel,
+        text,
+        event_id=event_id,
+        bot_user_id=bot_user_id,
+        known_messages={parts[0].marker: placeholder},
+    )
+
+
+async def apply_persona_for_delivery(
+    *,
+    enabled: bool,
+    original_body: str,
+    decision,
+    role_id: str = "",
+    persona: PersonaDefinition | None = None,
+    formatter=persona_formatter,
+    **render_options,
+):
+    """Single production switch for preserving the legacy delivery path."""
+    if not enabled:
+        return original_body, None
+    if persona is None or not role_id:
+        raise ValueError("Enabled persona delivery requires an exact role/version definition")
+    rendered = await render_persona_reply(
+        decision=decision,
+        role_id=role_id,
+        persona=persona,
+        formatter=formatter,
+        **render_options,
+    )
+    return rendered.text, rendered.audit
 
 
 async def serve():
@@ -736,42 +784,47 @@ async def serve():
                             log.warning("Coordinated task rejected: HTTP %s", task.status_code)
                             await waiting.edit(content="作業依頼の登録に失敗しました。監査ログを確認します。")
                             return
-                    coordinator_body = decision["reply"]
-                    if settings.personas.enabled:
-                        validated_coordinator = CoordinationDecision.model_validate(decision)
-                        role_id = settings.role_registry.resolve("coordinator")
-                        rendered = await render_persona_reply(
-                            decision=validated_coordinator,
-                            role_id=role_id,
-                            persona=PersonaDefinition(
+                    validated_coordinator = CoordinationDecision.model_validate(decision)
+                    role_id = settings.role_registry.resolve("coordinator")
+                    coordinator_body, persona_audit = await apply_persona_for_delivery(
+                        enabled=settings.personas.enabled,
+                        original_body=decision["reply"],
+                        decision=validated_coordinator,
+                        role_id=role_id,
+                        persona=(
+                            PersonaDefinition(
                                 role_id,
                                 prompt_context.persona_versions[role_id],
                                 prompt_context.personas[role_id],
-                            ),
-                            formatter=persona_formatter,
-                            execution_state=(
-                                "succeeded" if validated_coordinator.action == "task" else "not_run"
-                            ),
-                            identifiers={"event_id": message.id},
-                            next_step=(
-                                "task_registered" if validated_coordinator.action == "task"
-                                else None
-                            ),
-                            timeout_seconds=settings.personas.timeout_seconds,
-                            max_characters=settings.personas.max_characters,
-                        )
-                        if not rendered.text:
-                            log.error("persona final validation blocked coordinator delivery")
-                            await waiting.edit(content="安全検査により返信を停止しました。")
-                            return
-                        coordinator_body = rendered.text
+                            )
+                            if settings.personas.enabled
+                            else None
+                        ),
+                        execution_state=(
+                            "succeeded" if validated_coordinator.action == "task" else "not_run"
+                        ),
+                        identifiers={"event_id": message.id},
+                        next_step=(
+                            "task_registered" if validated_coordinator.action == "task" else None
+                        ),
+                        timeout_seconds=settings.personas.timeout_seconds,
+                        max_characters=settings.personas.max_characters,
+                    )
+                    if persona_audit:
                         log.info(
                             "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
-                            rendered.audit.role_id, rendered.audit.version,
-                            rendered.audit.fallback, rendered.audit.fallback_reason,
-                            rendered.audit.fact_digest, rendered.audit.final_validation,
+                            persona_audit.role_id, persona_audit.version,
+                            persona_audit.fallback, persona_audit.fallback_reason,
+                            persona_audit.fact_digest, persona_audit.final_validation,
                         )
-                    await waiting.edit(content=coordinator_body)
+                    await replace_with_chunked(
+                        message.channel,
+                        waiting,
+                        coordinator_body,
+                        event_id=f"chat-{message.id}-coordinator",
+                        bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                     if decision["action"] == "delegate":
                         bots = role_clients
                         initial_roles = [item["role"] for item in decision["delegations"]]
@@ -916,42 +969,46 @@ async def serve():
                                     continuation_limit=settings.specialist_continuation_limit,
                                 )
                                 final_body = f"{attention}{specialist_decision.reply}\n\n{next_step}"
-                                if settings.personas.enabled:
-                                    role_id = settings.role_registry.resolve(delegated["role"])
-                                    rendered = await render_persona_reply(
-                                        decision=specialist_decision,
-                                        role_id=role_id,
-                                        persona=PersonaDefinition(
+                                role_id = settings.role_registry.resolve(delegated["role"])
+                                final_body, persona_audit = await apply_persona_for_delivery(
+                                    enabled=settings.personas.enabled,
+                                    original_body=final_body,
+                                    decision=specialist_decision,
+                                    role_id=role_id,
+                                    persona=(
+                                        PersonaDefinition(
                                             role_id,
                                             prompt_context.persona_versions[role_id],
                                             prompt_context.personas[role_id],
-                                        ),
-                                        formatter=persona_formatter,
-                                        control_blocks=tuple(
-                                            part for part in (attention.strip(), next_step) if part
-                                        ),
-                                        execution_state="not_run",
-                                        identifiers={
-                                            "event_id": (
-                                                f"{message.id}-{delegated['role']}-"
-                                                f"{handoff_depth}-{handoff_round}-{continuation_turn}"
-                                            )
-                                        },
-                                        targets={"role": delegated["role"]},
-                                        quantities={"continuation_turn": continuation_turn},
-                                        next_step=next_step,
-                                        timeout_seconds=settings.personas.timeout_seconds,
-                                        max_characters=settings.personas.max_characters,
-                                    )
-                                    final_body = rendered.text
+                                        )
+                                        if settings.personas.enabled
+                                        else None
+                                    ),
+                                    control_blocks=tuple(
+                                        part for part in (attention.strip(), next_step) if part
+                                    ),
+                                    execution_state="not_run",
+                                    identifiers={
+                                        "event_id": (
+                                            f"{message.id}-{delegated['role']}-"
+                                            f"{handoff_depth}-{handoff_round}-{continuation_turn}"
+                                        )
+                                    },
+                                    targets={"role": delegated["role"]},
+                                    quantities={"continuation_turn": continuation_turn},
+                                    next_step=next_step,
+                                    timeout_seconds=settings.personas.timeout_seconds,
+                                    max_characters=settings.personas.max_characters,
+                                )
+                                if persona_audit:
                                     log.info(
                                         "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
-                                        rendered.audit.role_id,
-                                        rendered.audit.version,
-                                        rendered.audit.fallback,
-                                        rendered.audit.fallback_reason,
-                                        rendered.audit.fact_digest,
-                                        rendered.audit.final_validation,
+                                        persona_audit.role_id,
+                                        persona_audit.version,
+                                        persona_audit.fallback,
+                                        persona_audit.fallback_reason,
+                                        persona_audit.fact_digest,
+                                        persona_audit.final_validation,
                                     )
                                 if not final_body:
                                     log.error("persona final validation blocked delivery role=%s", delegated["role"])

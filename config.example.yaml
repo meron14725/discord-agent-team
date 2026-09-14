@@ -28,6 +28,7 @@ run_timeout: 1200
 poll_seconds: 60
 approval_seconds: 86400
 max_files: 100
+source_max_files: 190 # Read-only repository context; publication remains limited by max_files.
 max_bytes: 2000000
 auto_max_lines: 200
 message_content: false # /answer works without privileged Message Content Intent.

@@ -105,6 +105,7 @@ class Settings(BaseModel):
     poll_seconds: int = 60
     approval_seconds: int = 86400
     max_files: int = 100
+    source_max_files: int = 190
     max_bytes: int = 2_000_000
     auto_max_lines: int = 200
     message_content: bool = False

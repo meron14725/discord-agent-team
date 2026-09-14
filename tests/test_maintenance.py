@@ -166,6 +166,7 @@ def test_saved_patch_resume_requires_same_spec_plan_scope_and_identity(tmp_path)
         'job_id':'old-job', 'result':result.model_dump(), 'maintenance_paths':[PATH]}))
     runner = SbxRunner(state_dir=tmp_path)
     assert runner.resume_patch(req).patches[0].patch == PATCH
+    assert runner.resume_patch(req.model_copy(update={'kind':'fix'})).patches[0].patch == PATCH
     for change in [{'spec_hash':'other'}, {'head_sha':'other'}, {'maintenance_paths':['src/app.py']}, {'kind':'review'}]:
         with pytest.raises(GuardError):
             runner.resume_patch(req.model_copy(update=change))

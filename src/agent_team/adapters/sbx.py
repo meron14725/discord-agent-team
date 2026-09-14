@@ -132,7 +132,7 @@ class SbxRunner:
         if not request.resume_patch_job_id:
             return None
         execution_policy(request)
-        if not self.state_dir or not request.maintenance_paths or request.kind != "implement":
+        if not self.state_dir or not request.maintenance_paths or request.kind not in {"implement", "fix"}:
             raise GuardError("Patch resume requires a scoped implementation")
         key = hashlib.sha256(request.resume_patch_job_id.encode()).hexdigest()
         saved = json.loads((self.state_dir / "results" / (key + ".json")).read_text())

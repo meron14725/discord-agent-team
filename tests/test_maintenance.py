@@ -101,3 +101,37 @@ def test_native_source_reads_only_apply_to_scoped_maintenance_jobs():
     assert 'shell read commands' in instruction
     assert 'never edit the source snapshot or the broker output directory' in instruction
     assert 'broker executes' in instruction
+
+
+def test_patch_file_contract_only_allows_fixed_path_and_one_source():
+    from pydantic import ValidationError
+
+    from agent_team.contracts import PatchProposal
+
+    assert PatchProposal(patch_file='/tmp/team-implementation.patch', rationale='large diff').patch == ''
+    for fields in ({'patch_file':'/etc/passwd'}, {'patch':'diff','patch_file':'/tmp/team-implementation.patch'}, {}):
+        with pytest.raises(ValidationError):
+            PatchProposal(rationale='invalid', **fields)
+
+
+def test_patch_file_is_validated_and_saved_before_application(tmp_path):
+    import asyncio
+
+    from agent_team.adapters.codex import MockRunner
+    from agent_team.adapters.sbx import SbxRunner
+    from agent_team.contracts import PatchProposal
+
+    class PatchRunner(SbxRunner):
+        async def command(self, job_id, args, *other, **kwargs):
+            assert 'lstat()' in args[-1] and 'stat.S_ISREG' in args[-1]
+            return PATCH
+
+    req = request(role='backend_integrator', kind='implement', maintenance_paths=[PATH])
+    result = asyncio.run(MockRunner().run(req)).result
+    result.patches = [PatchProposal(patch_file='/tmp/team-implementation.patch', rationale='file output')]
+    runner = PatchRunner(state_dir=tmp_path)
+    asyncio.run(runner.resolve_patches('job','sandbox',req,result))
+    assert result.patches[0].patch == PATCH and result.patches[0].patch_file == ''
+    saved = json.loads(next((tmp_path / 'results').glob('*.json')).read_text())
+    assert saved['result']['patches'][0]['patch'] == PATCH
+    assert 'not evidence' in saved['note']

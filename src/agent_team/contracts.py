@@ -395,5 +395,12 @@ class CommandRequest(Strict):
 
 
 class PatchProposal(Strict):
-    patch: str = Field(min_length=1)
+    patch: str = ""
+    patch_file: Literal["", "/tmp/team-implementation.patch"] = ""
     rationale: str = Field(min_length=1, max_length=3000)
+
+    @model_validator(mode="after")
+    def require_one_patch_source(self):
+        if bool(self.patch) == bool(self.patch_file):
+            raise ValueError("Exactly one patch source is required")
+        return self

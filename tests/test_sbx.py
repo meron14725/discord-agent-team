@@ -318,3 +318,25 @@ def test_maintenance_test_runtime_installs_offline_and_only_when_authorized(tmp_
     (tmp_path / 'requirements.txt').unlink()
     with pytest.raises(GuardError, match='unavailable'):
         asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))
+
+
+def test_collector_allows_baseline_plus_new_files_but_stays_bounded(tmp_path):
+    import subprocess
+    import sys
+
+    from agent_team.adapters.sbx import COLLECT
+
+    source = tmp_path / 'source'
+    source.mkdir()
+    result_path = tmp_path / 'result.json'
+    result_path.write_text('{}')
+    for number in range(101):
+        (source / f'{number}.txt').write_text('content')
+    script = COLLECT.replace('/tmp/team-result.json', str(result_path))
+    completed = subprocess.run([sys.executable, '-c', script, str(source)], capture_output=True, text=True)
+    assert completed.returncode == 0
+    assert len(json.loads(completed.stdout)['files']) == 101
+    for number in range(101, 201):
+        (source / f'{number}.txt').write_text('content')
+    exceeded = subprocess.run([sys.executable, '-c', script, str(source)], capture_output=True, text=True)
+    assert exceeded.returncode != 0 and 'Artifact limit exceeded' in exceeded.stderr

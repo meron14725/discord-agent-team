@@ -66,7 +66,9 @@ def execution_role(request):
         "Implement the approved maintenance plan, or address supplied findings for a fix. "
         "Read the source snapshot in your current directory using shell read commands as needed. "
         "You may draft in /tmp, but never edit the source snapshot or the broker output directory. "
-        "Return unified diffs in patches for the broker to validate and apply. "
+        "Save the complete unified diff as /tmp/team-implementation.patch and return a small "
+        "patches entry with patch empty and patch_file set to that exact path, plus rationale. "
+        "Do not paste a large diff into the JSON response. The broker validates and applies the file. "
         "Select test commands only from the supplied allowlist; the broker executes them. "
         "Do not claim tests were run. Preserve approved requirements, plan and safety gates. "
         "Include requirement-to-test coverage, risks and summary. decision none."
@@ -325,6 +327,8 @@ for path, allowed in [(Path('inside.txt'), sys.argv[1] == 'workspace-write'), (P
         if any(tuple(item.argv) not in allowed_commands for item in result.commands):
             raise GuardError("Command request is outside the configured argv allowlist")
         for index, proposal in enumerate(result.patches):
+            if proposal.patch_file:
+                raise GuardError("Patch file transfer requires the microVM broker")
             self.patch_paths(proposal.patch, request.maintenance_paths)
             patch_path = root / f"proposal-{index}.diff"
             patch_path.write_text(proposal.patch)

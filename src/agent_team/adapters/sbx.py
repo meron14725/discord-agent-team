@@ -2,6 +2,7 @@
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
@@ -66,7 +67,7 @@ for path in root.rglob('*'):
         continue
     assert stat.S_ISREG(mode), 'Non-regular artifact'
     total += path.stat().st_size
-    assert total <= 2000000 and len(files) < 100, 'Artifact limit exceeded'
+    assert total <= 4000000 and len(files) < 200, 'Artifact limit exceeded'
     files[path.relative_to(root).as_posix()] = path.read_text()
 result = pathlib.Path('/tmp/team-result.json')
 assert result.is_file() and not result.is_symlink() and result.stat().st_size <= 2000000
@@ -99,6 +100,31 @@ class SbxRunner:
                                    "-r", "/tmp/team-test-runtime/requirements.txt"], request.timeout)
         await self.command(job_id, ["exec", "--user", "root", name, "ln", "-sf",
                                    "/usr/bin/python3", "/usr/local/bin/python"])
+
+    async def resolve_patches(self, job_id, name, request, result):
+        for proposal in result.patches:
+            if proposal.patch_file:
+                if not request.maintenance_paths:
+                    raise GuardError("Patch file requires scoped maintenance authorization")
+                script = (
+                    "import pathlib,stat; p=pathlib.Path('/tmp/team-implementation.patch'); "
+                    "s=p.lstat(); assert stat.S_ISREG(s.st_mode) and s.st_size<=2000000; "
+                    "print(p.read_text(),end='')"
+                )
+                patch = await self.command(job_id, ["exec", name, "python3", "-c", script])
+                if self.commands.scanner.scan_text(patch).blocked:
+                    raise GuardError("Potential secret in patch file")
+                proposal.patch, proposal.patch_file = patch, ""
+            self.commands.patch_paths(proposal.patch, request.maintenance_paths)
+        if self.state_dir:
+            root = self.state_dir / "results"
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            key = hashlib.sha256(job_id.encode()).hexdigest()
+            (root / (key + ".json")).write_text(json.dumps({
+                "job_id": job_id, "result": result.model_dump(),
+                "maintenance_paths": request.maintenance_paths,
+                "note": "Generated patches only; not evidence of application or test success",
+            }, ensure_ascii=False))
 
     def save_names(self):
         if self.state_dir:
@@ -393,6 +419,7 @@ else:
                 raise GuardError("Command request is outside the configured argv allowlist")
             if not result.patches:
                 raise GuardError("Brokered implementation returned no patch proposal")
+            await self.resolve_patches(job_id, name, request, result)
             for proposal in result.patches:
                 self.commands.patch_paths(proposal.patch, request.maintenance_paths)
                 patch_output = await self.command(
@@ -439,12 +466,14 @@ else:
             if getattr(result, field) != getattr(request, field):
                 raise GuardError("Result identity mismatch")
         final = payload["files"]
-        if len(final) > 100 or sum(len(v.encode()) for v in final.values()) > 2_000_000:
+        if len(final) > 200 or sum(len(v.encode()) for v in final.values()) > 4_000_000:
             raise GuardError("Artifact limit exceeded")
         for path in final:
             safe_path(path)
         changed = {p: v for p, v in final.items() if request.files.get(p) != v}
         changed.update({p: None for p in request.files if p not in final})
+        if len(changed) > 100 or sum(len((v or "").encode()) for v in changed.values()) > 2_000_000:
+            raise GuardError("Changed artifact limit exceeded")
         if readonly and not brokered_write and changed:
             raise GuardError("Read-only role modified source")
         if (request.kind == "coordinate") != (result.coordination is not None):

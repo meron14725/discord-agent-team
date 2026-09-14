@@ -100,3 +100,5 @@ v2の接続断（`ConnectError`）は、認証付きworkerヘルスチェック�
 大規模な人格実装では全ソース本文の一括入力と一回の差分応答だけでは実装が進まなかったため、案件限定メンテナンスでは読み取り専用マウントのソースをshell読取で段階的に参照させる。モデルは/tmpで草案を組み立てられるが、ソースとbroker出力の直接編集は禁止し、差分適用・テストはbrokerが実施する。通常のbrokered案件のshell禁止は維持する。モデル入力はソースパス一覧と許可コマンドを渡し、巨大な本文を重複送信しない。
 
 保守案件のPythonテストは、信頼済みuv.lockからLinux/Python 3.14向けwheelを準備し、`SBX_TEST_RUNTIME_DIR`配下のrequirements.txtとwheelsをsandboxへ転送して実行前に導入する。`uv pip install --no-index --require-hashes`でハッシュ検証とオフライン導入を必須にし、モデルから依存追加先やコマンドを指定させない。v2の起動スクリプトは`TEAM_TEST_RUNTIME_DIR`（既定`~/.local/share/discord-agent-team/test-runtime`）を使う。現在のsandboxにpython3だけが存在するため、brokerがpythonへの互換リンクも用意する。通常案件はこの保守用環境導入の対象外。
+
+大きな保守差分はモデルの応答JSONへ埋め込まず、`/tmp/team-implementation.patch`へ生成し、PatchProposalのpatch_fileで固定パスを参照する。brokerは通常ファイル・2MB上限・秘密検査・許可パスを検証してから適用する。検証済み差分はstate_dir/resultsへ保存し、テスト成功や適用成功を示す記録とは明確に区別する。任意パスやsymlinkの参照は許可しない。結果収集は既存スナップショット100件＋変更100件までを扱えるが、変更自体の100件/2MB上限は維持する。

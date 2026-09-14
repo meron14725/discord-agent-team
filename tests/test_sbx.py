@@ -203,8 +203,8 @@ def test_restart_recovers_only_journaled_vms_and_excludes_second_launcher(tmp_pa
     asyncio.run(verify())
 
 
-@pytest.mark.parametrize("brokered", [False, True])
-def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path, brokered):
+@pytest.mark.parametrize("brokered,maintenance", [(False, False), (True, False), (True, True)])
+def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path, brokered, maintenance):
     class ScriptedRunner(SbxRunner):
         calls = []
         model_prompt = ""
@@ -242,12 +242,17 @@ def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path, bro
         asyncio.run(runner.run(request(
             role="backend_integrator" if brokered else "upstream",
             kind="implement" if brokered else "clarify",
+            maintenance_paths=["src/app.py"] if maintenance else [],
             files={"app.py": "value = 42\n"},
             test_commands=[["python", "-m", "pytest"]] if brokered else [],
         )))
     if brokered:
         supplied = json.loads(runner.model_prompt.rsplit("\n", 1)[-1])
-        assert supplied["files"] == {"app.py": "value = 42\n"}
+        if maintenance:
+            assert supplied["source_paths"] == ["app.py"]
+            assert "shell read commands" in runner.model_prompt
+        else:
+            assert supplied["files"] == {"app.py": "value = 42\n"}
         assert supplied["test_commands"] == [["python", "-m", "pytest"]]
     create = next(args for args in runner.calls if args[0] == "create")
     assert create[-1].endswith("/source:ro") and create[-2].endswith("/scratch")
@@ -282,7 +287,8 @@ def test_runtime_support_is_retained_but_not_duplicated_into_maintenance_prompt(
                   files={'src/app.py': 'value = 42', 'tests/test_app.py': 'assert True',
                          'vendor/bundle.js': 'x' * 1_000_000, 'docs/old-plan.md': 'historical'})
     payload = json.loads(brokered_source_context(req).rsplit('\n', 1)[-1])
-    assert payload['files'] == {'src/app.py': 'value = 42', 'tests/test_app.py': 'assert True'}
-    assert payload['runtime_support_files'] == ['docs/old-plan.md', 'vendor/bundle.js']
+    assert payload['source_paths'] == sorted(req.files)
+    assert 'read-only source' in brokered_source_context(req)
+    assert 'files' not in payload
     assert len(req.files['vendor/bundle.js']) == 1_000_000
     assert len(brokered_source_context(req)) < 2000

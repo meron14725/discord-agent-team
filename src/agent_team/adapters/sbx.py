@@ -11,13 +11,20 @@ from pathlib import Path
 
 from ..contracts import Result, RunRequest, RunResponse, TestEvidence
 from ..policy import GuardError, safe_path
-from .codex import ROLE, SPECIALIST_ROLE, CodexRunner, codex_output_schema, execution_policy
+from .codex import SPECIALIST_ROLE, CodexRunner, codex_output_schema, execution_policy, execution_role
 
 IMAGE = "docker/sandbox-templates@sha256:8b4cd0a46c8b600bc6b6a64af23c03d4c2807fbfc61f47568092a93fb9dc88b0"
 IDENTITY = ("task_id", "spec_version", "spec_hash", "head_sha", "base_sha")
 
 
 def brokered_source_context(request):
+    if request.maintenance_paths:
+        return (
+            "\nMaintenance source access: all supplied files are in the current, read-only source "
+            "directory. Read them incrementally with shell read commands; do not modify them. "
+            "The broker keeps a separate output copy for validated patches and test execution.\n"
+            + json.dumps({"source_paths": sorted(request.files), "test_commands": request.test_commands}, ensure_ascii=False)
+        )
     source = {path: content for path, content in request.files.items()
               if not path.startswith("vendor/")
               and not (request.maintenance_paths and path.startswith("docs/"))}
@@ -300,7 +307,7 @@ else:
         prompt = (
             execution_policy(request)
             + "\n"
-            + ROLE[request.kind]
+            + execution_role(request)
             + ("\n" + SPECIALIST_ROLE[request.role] if request.kind == "respond" else "")
             + "\nIdentity: "
             + json.dumps({k: getattr(request, k) for k in IDENTITY})

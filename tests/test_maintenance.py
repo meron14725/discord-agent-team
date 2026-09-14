@@ -90,3 +90,14 @@ def test_implementation_answer_keeps_approvals_and_does_not_redraft(team):
     revised = command('revise', task_id=task_id, text='要件を変更する')
     assert revised['state'] == 'DraftingRequirements'
     assert revised['data']['requirements_approval_id'] == ''
+
+
+def test_native_source_reads_only_apply_to_scoped_maintenance_jobs():
+    from agent_team.adapters.codex import execution_role
+
+    req = request(role='backend_integrator', kind='implement')
+    assert 'do not invoke shell' in execution_role(req)
+    instruction = execution_role(req.model_copy(update={'maintenance_paths':[PATH]}))
+    assert 'shell read commands' in instruction
+    assert 'never edit the source snapshot or the broker output directory' in instruction
+    assert 'broker executes' in instruction

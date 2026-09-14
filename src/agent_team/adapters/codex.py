@@ -57,6 +57,21 @@ ROLE = {
     "review_plan": "Act as a fresh independent CTO session. Review the supplied approved Issue and implementation plan. Return evidence for the exact AC set and reject every unresolved critical/high/medium finding. Do not edit files.",
 }
 
+
+def execution_role(request):
+    if not request.maintenance_paths:
+        return ROLE[request.kind]
+    execution_policy(request)  # Validate role and exact maintenance scope first.
+    return (
+        "Implement the approved maintenance plan, or address supplied findings for a fix. "
+        "Read the source snapshot in your current directory using shell read commands as needed. "
+        "You may draft in /tmp, but never edit the source snapshot or the broker output directory. "
+        "Return unified diffs in patches for the broker to validate and apply. "
+        "Select test commands only from the supplied allowlist; the broker executes them. "
+        "Do not claim tests were run. Preserve approved requirements, plan and safety gates. "
+        "Include requirement-to-test coverage, risks and summary. decision none."
+    )
+
 SPECIALIST_ROLE = {
     "upstream": "You own requirements, architecture, planning, risk analysis, and independent review.",
     "downstream": "You own implementation tactics, debugging, tests, and concrete code-change advice.",
@@ -384,7 +399,7 @@ for path, allowed in [(Path('inside.txt'), sys.argv[1] == 'workspace-write'), (P
             prompt = (
                 execution_policy(request)
                 + "\n"
-                + ROLE[request.kind]
+                + execution_role(request)
                 + ("\n" + SPECIALIST_ROLE[request.role] if request.kind == "respond" else "")
                 + "\nIdentity: "
                 + json.dumps(identity)

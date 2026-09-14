@@ -98,3 +98,5 @@ v2の接続断（`ConnectError`）は、認証付きworkerヘルスチェック�
 実装・修正担当のblocked/needs_clarificationへの`answer`は、同じ仕様・計画の版であれば担当への補足として保持し、承認を外さず再開する。補足で承認済み範囲を変更してはならず、変更が必要なら明示的な`revise`へ戻す。`revise`は従来どおり承認を失効させる。人格案件の読み取り入力には既存のpyproject、lock、prompts、vendorも含め、テスト・ローダーから参照できるようにする。これらの読み取り許可は書き換え許可ではない。
 
 大規模な人格実装では全ソース本文の一括入力と一回の差分応答だけでは実装が進まなかったため、案件限定メンテナンスでは読み取り専用マウントのソースをshell読取で段階的に参照させる。モデルは/tmpで草案を組み立てられるが、ソースとbroker出力の直接編集は禁止し、差分適用・テストはbrokerが実施する。通常のbrokered案件のshell禁止は維持する。モデル入力はソースパス一覧と許可コマンドを渡し、巨大な本文を重複送信しない。
+
+保守案件のPythonテストは、信頼済みuv.lockからLinux/Python 3.14向けwheelを準備し、`SBX_TEST_RUNTIME_DIR`配下のrequirements.txtとwheelsをsandboxへ転送して実行前に導入する。`uv pip install --no-index --require-hashes`でハッシュ検証とオフライン導入を必須にし、モデルから依存追加先やコマンドを指定させない。v2の起動スクリプトは`TEAM_TEST_RUNTIME_DIR`（既定`~/.local/share/discord-agent-team/test-runtime`）を使う。現在のsandboxにpython3だけが存在するため、brokerがpythonへの互換リンクも用意する。通常案件はこの保守用環境導入の対象外。

@@ -177,7 +177,8 @@ def create_sbx_worker():
     from .adapters.sbx import SbxRunner
 
     return create_worker(
-        runner=SbxRunner(state_dir=os.environ.get("SBX_STATE_DIR", "artifacts/sbx-state")),
+        runner=SbxRunner(state_dir=os.environ.get("SBX_STATE_DIR", "artifacts/sbx-state"),
+                         test_runtime_dir=os.environ.get("SBX_TEST_RUNTIME_DIR")),
         role=os.environ.get("WORKER_ROLE", "both"),
         capacity=int(os.environ.get("WORKER_CONCURRENCY", "1")),
     )

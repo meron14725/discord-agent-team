@@ -75,13 +75,30 @@ print(json.dumps({'files': files, 'result': json.loads(result.read_text())}))
 
 
 class SbxRunner:
-    def __init__(self, workspace=None, state_dir=None):
+    def __init__(self, workspace=None, state_dir=None, test_runtime_dir=None):
         self.workspace = Path(workspace or tempfile.gettempdir())
         self.commands = CodexRunner(max_bytes=8_000_000)
         self.names = {}
         self.cleanup_lock = asyncio.Lock()
         self.state_dir = Path(state_dir) if state_dir else None
         self.lock_file = None
+        self.test_runtime_dir = Path(test_runtime_dir) if test_runtime_dir else None
+
+    async def prepare_test_runtime(self, job_id, name, request):
+        if not (request.maintenance_paths and request.test_commands and self.test_runtime_dir):
+            return
+        execution_policy(request)
+        if not (self.test_runtime_dir / "requirements.txt").is_file() or not (
+            self.test_runtime_dir / "wheels"
+        ).is_dir():
+            raise GuardError("Trusted offline test runtime is unavailable")
+        await self.command(job_id, ["cp", str(self.test_runtime_dir), name + ":/tmp/team-test-runtime"])
+        await self.command(job_id, ["exec", "--user", "root", name, "uv", "pip", "install",
+                                   "--system", "--break-system-packages", "--no-index", "--require-hashes",
+                                   "--find-links", "/tmp/team-test-runtime/wheels",
+                                   "-r", "/tmp/team-test-runtime/requirements.txt"], request.timeout)
+        await self.command(job_id, ["exec", "--user", "root", name, "ln", "-sf",
+                                   "/usr/bin/python3", "/usr/local/bin/python"])
 
     def save_names(self):
         if self.state_dir:
@@ -304,6 +321,7 @@ else:
                 }
             ),
         )
+        await self.prepare_test_runtime(job_id, name, request)
         prompt = (
             execution_policy(request)
             + "\n"

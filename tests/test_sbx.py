@@ -292,3 +292,29 @@ def test_runtime_support_is_retained_but_not_duplicated_into_maintenance_prompt(
     assert 'files' not in payload
     assert len(req.files['vendor/bundle.js']) == 1_000_000
     assert len(brokered_source_context(req)) < 2000
+
+
+def test_maintenance_test_runtime_installs_offline_and_only_when_authorized(tmp_path):
+    (tmp_path / 'requirements.txt').write_text('pytest==9.1.1\n')
+    (tmp_path / 'wheels').mkdir()
+
+    class RuntimeRunner(SbxRunner):
+        calls = []
+
+        async def command(self, job_id, args, *other, **kwargs):
+            self.calls.append(args)
+            return ''
+
+    runner = RuntimeRunner(test_runtime_dir=tmp_path)
+    req = request(role='backend_integrator', kind='implement', test_commands=[['python','-m','pytest']])
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req))
+    assert runner.calls == []
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))
+    assert len(runner.calls) == 3
+    install = runner.calls[1]
+    assert '--no-index' in install and '--require-hashes' in install
+    assert install[:4] == ['exec','--user','root','sandbox']
+    assert runner.calls[2][-2:] == ['/usr/bin/python3','/usr/local/bin/python']
+    (tmp_path / 'requirements.txt').unlink()
+    with pytest.raises(GuardError, match='unavailable'):
+        asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))

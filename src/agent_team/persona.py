@@ -152,7 +152,7 @@ def deterministic_fallback(envelope: FixedFactEnvelope) -> str:
         "not_run": "操作は実行していません。",
         "succeeded": "操作は成功しました。",
         "failed": "操作は失敗しました。",
-    }.get(envelope.execution_state, f"実行状態: {envelope.execution_state}。")
+    }.get(envelope.execution_state, "実行状態を確認できません。")
     next_text = {
         "owner_answer": "次はオーナーの回答待ちです。",
         "owner_approval": "次はオーナーの承認待ちです。",
@@ -162,29 +162,16 @@ def deterministic_fallback(envelope: FixedFactEnvelope) -> str:
         "coordinator_task_registration": "次は統括が正式案件を提案します。",
         "task_registration": "次は正式案件の登録です。",
         "complete": "次の自動操作はありません。",
-    }.get(envelope.next_step, "次工程: " + envelope.next_step + "。")
+    }.get(envelope.next_step, "次工程は制御層で確認してください。")
     details = []
-    if envelope.approval_reason:
-        details.append("承認理由: " + envelope.approval_reason + "。")
     if envelope.handoff_roles:
-        details.append("引き継ぎ先: " + ", ".join(envelope.handoff_roles) + "。")
-    if envelope.handoff_instructions:
-        details.append("引き継ぎ内容: " + " / ".join(envelope.handoff_instructions) + "。")
-    if envelope.task_summary:
-        details.append("案件要約: " + envelope.task_summary + "。")
-    if envelope.continuation_instruction:
-        details.append("継続内容: " + envelope.continuation_instruction + "。")
-    if envelope.change_plan:
-        details.append("変更計画: " + json.dumps(dict(envelope.change_plan), ensure_ascii=False, sort_keys=True) + "。")
-    for label, values in (("識別子", envelope.identifiers), ("対象", envelope.targets), ("数量", envelope.quantities)):
-        if values:
-            details.append(label + ": " + json.dumps(dict(values), ensure_ascii=False, sort_keys=True) + "。")
+        details.append("引き継ぎ先は固定事実ブロックに記録されています。")
     return state + "".join(details) + next_text + "\n" + fixed_fact_block(envelope)
 
 
 def _fact_payload(envelope: FixedFactEnvelope) -> dict[str, Any]:
     """Return the complete authoritative payload used at the transport boundary."""
-    return {
+    payload = {
         "action": envelope.action,
         "approval_reason": envelope.approval_reason,
         "approval_state": envelope.approval_state,
@@ -200,6 +187,20 @@ def _fact_payload(envelope: FixedFactEnvelope) -> dict[str, Any]:
         "targets": dict(envelope.targets),
         "task_summary": envelope.task_summary,
     }
+    # Decision fields are authoritative, but many are still user/model supplied
+    # free text.  They must never cross the Discord boundary with a credential.
+    # Keep the field and its shape for invariant checks while replacing only a
+    # detected secret value with a stable marker.
+    def safe(value: Any) -> Any:
+        if isinstance(value, str):
+            return "[redacted]" if SECRET_RE.search(value) else value
+        if isinstance(value, list):
+            return [safe(item) for item in value]
+        if isinstance(value, dict):
+            return {safe(str(key)): safe(item) for key, item in value.items()}
+        return value
+
+    return safe(payload)
 
 
 def fixed_fact_block(envelope: FixedFactEnvelope) -> str:
@@ -353,7 +354,15 @@ async def render_persona_reply(
         # The configured bound limits model presentation. A complete factual
         # fallback is allowed to exceed one Discord message because the common
         # delivery boundary deterministically splits it into marked parts.
-        checks = validate_final_reply(body, envelope, max_characters=max(max_characters, len(body)))
+        try:
+            checks = validate_final_reply(body, envelope, max_characters=max(max_characters, len(body)))
+        except Exception as exc:
+            # A fallback must not reopen formatting or control flow.  This last
+            # response contains enumerated state only; the exact, redacted fact
+            # block remains available to the transport/audit boundary.
+            reason = reason + ";fallback_validation:" + (str(exc) or "internal_error")
+            body = "返信を安全に整形できませんでした。次工程は制御層で確認してください。\n" + fixed_fact_block(envelope)
+            checks = validate_final_reply(body, envelope, max_characters=max(max_characters, len(body)))
     return PersonaRenderResult(
         body,
         PersonaAudit(

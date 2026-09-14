@@ -97,3 +97,26 @@ def test_large_complete_fallback_is_preserved_for_chunked_delivery():
     assert result.audit.fallback
     assert len(result.text) > 2000
     assert large in result.text
+
+
+def test_secret_in_authoritative_free_text_is_redacted_and_fallback_is_delivered():
+    waiting = SpecialistDecision(
+        action="request_approval",
+        reply="承認待ちです。",
+        task_summary="",
+        approval_reason="token: secret-value",
+        continuation_instruction="",
+        sre_plan=None,
+        handoffs=[],
+    )
+    result = asyncio.run(render_persona_reply(
+        decision=waiting,
+        role_id="security_sre",
+        persona=PersonaDefinition("security_sre", "v1", "x"),
+        formatter=lambda request: 1 / 0,
+    ))
+    assert result.audit.fallback
+    assert result.audit.final_validation == "passed"
+    assert "secret-value" not in result.text
+    assert '"approval_reason":"[redacted]"' in result.text
+    assert "承認待ち" in result.text

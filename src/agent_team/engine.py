@@ -482,7 +482,15 @@ class Engine:
                     raise GuardError("Implementation plan changed after approval")
             context = {
                 "owner_request": task.data["summary"],
+                "approved_spec": authority["body"],
                 "approved_requirements": authority["body"],
+                "controller_managed_spec": {
+                    "authority": "github_issue",
+                    "issue_number": authority["number"],
+                    "updated_at": authority["updated_at"],
+                    "body_hash": authority["body_hash"],
+                    "body": authority["body"],
+                },
                 "required_acceptance_ids": task.data.get("requirements_acceptance_ids", []),
                 "implementation_plan": plan_body,
                 "findings": task.data.get("findings", []),

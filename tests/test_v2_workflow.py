@@ -472,7 +472,14 @@ def test_v2_external_head_change_enqueues_identity_bound_cto_review(team):
             "base_sha": current["data"]["base_sha"],
             "head_sha": new_head,
         }
-    assert engine.claim()[0] == job.id
+    claim = engine.claim()
+    assert claim[0] == job.id
+    request = engine.prepare(*claim)
+    context = json.loads(request.prompt)
+    audit_copy = context["controller_managed_spec"]
+    assert audit_copy["authority"] == "github_issue"
+    assert audit_copy["body"] == context["approved_spec"] == context["approved_requirements"]
+    assert audit_copy["body_hash"] == request.spec_hash
 
 
 def test_v2_safe_issue_proposal_resumes_from_saved_result_after_owner_applies_it(team):

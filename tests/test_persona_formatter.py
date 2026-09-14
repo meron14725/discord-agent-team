@@ -53,6 +53,30 @@ def test_formatter_cannot_rewrite_or_surround_the_validated_source_reply():
         assert result.text.startswith("操作は実行していません。")
 
 
+def test_not_run_rejects_completion_synonyms():
+    for claim in (
+        "対応は終わりました。",
+        "デプロイ済みです。",
+        "処理は完了です。",
+        "修正は反映済みです。",
+        "設定を更新できました。",
+    ):
+        claimed = SpecialistDecision(
+            action="reply", reply=claim, task_summary="", approval_reason="",
+            continuation_instruction="", sre_plan=None, handoffs=[]
+        )
+
+        result = asyncio.run(render_persona_reply(
+            decision=claimed,
+            role_id="cto",
+            persona=PersonaDefinition("cto", "v1", "x"),
+            formatter=async_formatter(lambda request: request.safe_source_reply),
+        ))
+
+        assert result.audit.fallback
+        assert claim not in result.text
+
+
 def test_timeout_falls_back_without_rerunning_decision():
     calls = []
     async def slow(request):

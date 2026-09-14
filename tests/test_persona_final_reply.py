@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -71,12 +72,36 @@ def test_control_block_is_a_complete_exact_envelope_not_substring_evidence():
         persona=PersonaDefinition("security_sre", "v1", "bad"), formatter=lambda request: "",
         identifiers={"event_id": "evt-9"}, targets={"channel": "42"}, quantities={"count": 2},
     ))
-    assert result.audit.fallback and "実行しますか？" in result.text
+    assert result.audit.fallback and "実行しますか？" not in result.text
+    control = next(line for line in result.text.splitlines() if line.startswith("[fixed-facts]"))
+    assert json.loads(control.removeprefix("[fixed-facts]"))["approval_reason"] == "実行しますか？"
     tampered = result.text.replace('"approval_state":"waiting"', '"approval_state":"none"')
     with pytest.raises(ValueError, match="fixed_fact_block_mismatch"):
         validate_final_reply(tampered, FixedFactEnvelope.from_decision(
             "security_sre", decision, identifiers={"event_id": "evt-9"},
             targets={"channel": "42"}, quantities={"count": 2}), max_characters=2000)
+
+
+def test_fixed_fact_questions_cannot_exceed_the_discord_question_limit():
+    decision = SpecialistDecision(
+        action="request_approval",
+        reply="どちらにしますか？",
+        task_summary="",
+        approval_reason="案Aですか？案Bですか？",
+        continuation_instruction="",
+        sre_plan=None,
+        handoffs=[],
+    )
+    result = asyncio.run(render_persona_reply(
+        decision=decision,
+        role_id="security_sre",
+        persona=PersonaDefinition("security_sre", "v1", "bad"),
+        formatter=lambda request: "",
+    ))
+
+    assert result.text.count("?") + result.text.count("？") <= 1
+    control = next(line for line in result.text.splitlines() if line.startswith("[fixed-facts]"))
+    assert json.loads(control.removeprefix("[fixed-facts]"))["approval_reason"] == "案Aですか？案Bですか？"
 
 
 @pytest.mark.parametrize(

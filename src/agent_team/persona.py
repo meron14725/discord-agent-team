@@ -20,7 +20,13 @@ from .redaction import SecretScanner
 Decision = CoordinationDecision | SpecialistDecision
 Formatter = Callable[["PersonaFormatRequest"], Awaitable[str]]
 QUESTION_RE = re.compile(r"[?？]")
-COMPLETED_RE = re.compile(r"(?:実行|変更|作業|送信|公開|マージ).{0,8}(?:済み|完了|成功|しました)")
+COMPLETED_RE = re.compile(
+    r"(?:"
+    r"(?:実行|変更|作業|送信|公開|マージ|対応|処理|デプロイ|配備|反映|修正|実装|設定|更新|作成|削除|復旧).{0,12}"
+    r"(?:済み|完了|終了|成功|終わ(?:り|った)|終えました|しました|しています|できました)"
+    r"|(?:完了|終了|成功|対応済み|処理済み|デプロイ済み|配備済み)(?:です|しました|しています)?"
+    r")"
+)
 FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
 NOT_RUN_RE = re.compile(r"(?:未実行|実行していません|not[_ -]?run)", re.IGNORECASE)
 APPROVAL_WAIT_RE = re.compile(r"(?:承認待ち|承認が必要|approval\s+required)", re.IGNORECASE)
@@ -209,9 +215,14 @@ def _fact_payload(envelope: FixedFactEnvelope) -> dict[str, Any]:
 
 
 def fixed_fact_block(envelope: FixedFactEnvelope) -> str:
-    return CONTROL_PREFIX + json.dumps(
+    encoded = json.dumps(
         _fact_payload(envelope), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
+    # This JSON is machine-readable transport metadata. Escaping question
+    # punctuation preserves the decoded value while preventing metadata from
+    # adding user-facing questions to the Discord message.
+    encoded = encoded.replace("?", r"\u003f").replace("？", r"\uff1f")
+    return CONTROL_PREFIX + encoded
 
 
 async def persona_formatter(request: PersonaFormatRequest) -> str:
@@ -271,7 +282,7 @@ def validate_final_reply(
         raise ValueError("fixed_fact_block_mismatch")
     checks.append("control_block_exact")
     presentation = "\n".join(line for line in lines if not line.startswith(CONTROL_PREFIX))
-    if len(QUESTION_RE.findall(presentation)) > 1:
+    if len(QUESTION_RE.findall(text)) > 1:
         raise ValueError("multiple_questions")
     checks.append("question_limit")
     if envelope.execution_state == "not_run" and COMPLETED_RE.search(presentation):

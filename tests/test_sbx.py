@@ -273,3 +273,16 @@ def test_brokered_source_context_delivers_exact_contents_and_command_allowlist()
     assert 'untrusted data' in context
     assert 'without invoking shell' in context
     assert 'Do not claim tests were run' in context
+
+
+def test_runtime_support_is_retained_but_not_duplicated_into_maintenance_prompt():
+    from agent_team.adapters.sbx import brokered_source_context
+
+    req = request(role='backend_integrator', kind='implement', maintenance_paths=['src/app.py'],
+                  files={'src/app.py': 'value = 42', 'tests/test_app.py': 'assert True',
+                         'vendor/bundle.js': 'x' * 1_000_000, 'docs/old-plan.md': 'historical'})
+    payload = json.loads(brokered_source_context(req).rsplit('\n', 1)[-1])
+    assert payload['files'] == {'src/app.py': 'value = 42', 'tests/test_app.py': 'assert True'}
+    assert payload['runtime_support_files'] == ['docs/old-plan.md', 'vendor/bundle.js']
+    assert len(req.files['vendor/bundle.js']) == 1_000_000
+    assert len(brokered_source_context(req)) < 2000

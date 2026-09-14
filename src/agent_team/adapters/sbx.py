@@ -19,11 +19,11 @@ IDENTITY = ("task_id", "spec_version", "spec_hash", "head_sha", "base_sha")
 
 
 def source_file_limit(request):
-    return 190 if request.maintenance_paths else 100
+    return 190 if request.maintenance_paths or request.kind == "review" else 100
 
 
 def source_byte_limit(request):
-    return 4_000_000 if request.maintenance_paths else 2_000_000
+    return 4_000_000 if request.maintenance_paths or request.kind == "review" else 2_000_000
 
 
 def brokered_source_context(request):

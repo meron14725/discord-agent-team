@@ -182,3 +182,6 @@ def test_sbx_maintenance_input_limit_is_separate_from_published_change_limit():
     assert source_file_limit(req) == 190
     assert source_byte_limit(req.model_copy(update={'maintenance_paths': []})) == 2_000_000
     assert source_byte_limit(req) == 4_000_000
+    review = req.model_copy(update={'kind': 'review', 'role': 'cto', 'maintenance_paths': []})
+    assert source_file_limit(review) == 190
+    assert source_byte_limit(review) == 4_000_000

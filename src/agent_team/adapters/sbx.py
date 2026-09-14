@@ -91,13 +91,15 @@ class SbxRunner:
         execution_policy(request)
         if not (self.test_runtime_dir / "requirements.txt").is_file() or not (
             self.test_runtime_dir / "wheels"
-        ).is_dir():
+        ).is_dir() or not (self.test_runtime_dir / "bin" / "patch").is_file():
             raise GuardError("Trusted offline test runtime is unavailable")
         await self.command(job_id, ["cp", str(self.test_runtime_dir), name + ":/tmp/team-test-runtime"])
         await self.command(job_id, ["exec", "--user", "root", name, "uv", "pip", "install",
                                    "--system", "--break-system-packages", "--no-index", "--require-hashes",
                                    "--find-links", "/tmp/team-test-runtime/wheels",
                                    "-r", "/tmp/team-test-runtime/requirements.txt"], request.timeout)
+        await self.command(job_id, ["exec", "--user", "root", name, "install", "-m", "755",
+                                   "/tmp/team-test-runtime/bin/patch", "/usr/local/bin/patch"])
         await self.command(job_id, ["exec", "--user", "root", name, "ln", "-sf",
                                    "/usr/bin/python3", "/usr/local/bin/python"])
 

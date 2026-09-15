@@ -90,7 +90,14 @@ class MaintenanceAuthorization(BaseModel):
     paths: list[str]
 
 
+class DeploymentSettings(BaseModel):
+    enabled: bool = False
+    repository_alias: str = ""
+    approval_seconds: int = Field(default=900, ge=60, le=86400)
+
+
 class Settings(BaseModel):
+    deployment: DeploymentSettings = Field(default_factory=DeploymentSettings)
     maintenance_authorizations: dict[str, MaintenanceAuthorization] = Field(default_factory=dict)
     github_reviewer_app: ReviewerApp | None = None
     mode: Literal["mock", "live"] = "mock"
@@ -136,6 +143,10 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def live_ready(self):
+        if self.deployment.enabled:
+            target = self.repos.get(self.deployment.repository_alias)
+            if not target or target.per_task or not target.checks or self.merge_mode != "human_gate":
+                raise ValueError("Deployment requires one existing repository, trusted CI and human merge approval")
         for role in self.personas.active_versions:
             self.role_registry.resolve(role)
         if self.personas.enabled:

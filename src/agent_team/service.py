@@ -141,6 +141,15 @@ class TaskService:
                     enqueue(s, task, "clarify")
             elif task is None:
                 raise GuardError("Task is required")
+            elif action == "retry" and task.state == "Merged":
+                from .deployments import propose
+
+                propose(s, task, self.settings)
+            elif action == "approve_deploy":
+                from .deployments import approve
+
+                approve(s, task, self.settings, actor=actor, operation_id=confirmation_id,
+                        plan_hash=hash, sha=head_sha)
             elif task.workflow_version == 2 and action == "approve_requirements":
                 self.v2.approve_requirements_in_session(
                     s,

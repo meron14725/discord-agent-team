@@ -91,6 +91,8 @@ def format_task_status(task: dict) -> str:
     ]
     if reason := data.get("reason"):
         lines.append(f"理由: {reason}")
+    if data.get("deployment_status"):
+        lines.append(f"Docker反映: {data['deployment_status']}")
     lines.append(f"次: {task_next_step(state)}")
     if proposal := data.get("requirements_proposal_url"):
         lines.append(f"最新の要件案: {proposal}")
@@ -1262,6 +1264,19 @@ async def serve():
         for client in dict.fromkeys(role_clients.values()):
             await client.wait_until_ready()
         while True:
+            # Host updater checks live Discord readiness, not just container uptime.
+            import time
+            from pathlib import Path
+
+            active_clients = {role_clients[r.id] for r in settings.role_registry.entries
+                              if r.enabled and r.discord_enabled}
+            health_path = Path("/tmp/agent-team-gateway-health.json")
+            health_path.with_suffix(".tmp").write_text(__import__("json").dumps({
+                "ready": bool(active_clients) and all(bot.is_ready() for bot in active_clients),
+                "timestamp": time.time(),
+            }))
+            health_path.with_suffix(".tmp").replace(health_path)
+
             try:
                 response = await api.get("/outbox")
                 response.raise_for_status()
@@ -1329,6 +1344,7 @@ async def serve():
                                     "requirements": "要件を承認",
                                     "plan": "実装計画を承認",
                                     "merge": "このSHAのマージを承認",
+                                    "deploy": "このSHAをDockerへ反映",
                                 }
                                 view.add_item(
                                     discord.ui.Button(
@@ -1340,7 +1356,8 @@ async def serve():
                                 approvers = (
                                     settings.workflow_v2.requirements_approver_ids
                                     if item["approval"] == "requirements"
-                                    else settings.workflow_v2.plan_approver_ids
+                                    else (settings.owner_ids if item["approval"] in {"merge", "deploy"}
+                                          else settings.workflow_v2.plan_approver_ids)
                                 )
                                 if approvers:
                                     owner = discord.Object(id=int(approvers[0]))
@@ -1467,9 +1484,9 @@ async def serve():
                             view = discord.ui.View(timeout=None)
                             view.add_item(
                                 discord.ui.Button(
-                                    label="仕様を承認"
-                                    if item["approval"] == "spec"
-                                    else "このSHAのマージを承認",
+                                    label={"spec": "仕様を承認", "deploy": "このSHAをDockerへ反映"}.get(
+                                        item["approval"], "このSHAのマージを承認"
+                                    ),
                                     custom_id="team:" + item["id"],
                                     style=discord.ButtonStyle.success,
                                 )

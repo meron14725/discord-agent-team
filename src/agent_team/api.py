@@ -268,6 +268,14 @@ def create_app(db=None, settings=None, token=None):
             raise HTTPException(401, "Invalid internal credential")
         db.check_leader()
 
+    def conversation_available():
+        from .db import Operation
+
+        with db.transaction() as session:
+            if session.scalar(select(Operation.id).where(
+                Operation.key.like("deployment:%"), Operation.status == "running").limit(1)):
+                raise HTTPException(503, "Docker更新中です。稼働確認後に会話を再開します。")
+
     @app.get("/health")
     def health():
         future = getattr(app.state, "loop", None)
@@ -290,7 +298,7 @@ def create_app(db=None, settings=None, token=None):
         except ValueError as e:
             raise HTTPException(404, str(e)) from e
 
-    @app.post("/coordinate", dependencies=[Depends(authenticate)])
+    @app.post("/coordinate", dependencies=[Depends(authenticate), Depends(conversation_available)])
     async def coordinate(command: CoordinateCommand):
         try:
             if scanner.scan_text(command.text + "\n" + "\n".join(command.history)).blocked:
@@ -383,7 +391,7 @@ def create_app(db=None, settings=None, token=None):
             )
             raise HTTPException(503, "Coordinator agent is temporarily unavailable") from error
 
-    @app.post("/specialist-turn", dependencies=[Depends(authenticate)])
+    @app.post("/specialist-turn", dependencies=[Depends(authenticate), Depends(conversation_available)])
     async def specialist_turn(command: SpecialistCommand):
         try:
             if scanner.scan_text(

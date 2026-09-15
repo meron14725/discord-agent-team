@@ -122,6 +122,12 @@ class Engine:
     def claim(self):
         self.db.check_leader()
         with self.db.transaction() as s:
+            from .deployments import lock_execution
+
+            lock_execution(s)
+            if s.scalar(select(Operation.id).where(
+                Operation.key.like("deployment:%"), Operation.status == "running").limit(1)):
+                return None
             now = time.time()
             for expired in s.scalars(
                 select(Job).where(Job.status == "running", Job.lease < now).with_for_update()
@@ -1391,6 +1397,9 @@ class Engine:
                         }
                         invalidate(s, task)
                         transition(s, task, "Merged", "GitHubでマージ確定")
+                        from .deployments import propose
+
+                        propose(s, task, self.settings)
                         continue
                     if task.state in STOPPED:
                         continue
@@ -1467,6 +1476,9 @@ class Engine:
                             "merged_externally": False,
                         }
                         transition(s, task, "Merged", "GitHubでマージ確定")
+                        from .deployments import propose
+
+                        propose(s, task, self.settings)
                         op = s.scalar(select(Operation).where(Operation.key == key))
                         op.status, op.data = "done", {"merge_sha": confirmed["merge_sha"]}
             except GuardError as e:

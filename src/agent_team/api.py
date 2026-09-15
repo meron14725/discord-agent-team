@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -177,14 +178,17 @@ def enforce_explicit_audience(
     text: str,
     roles: tuple[str, ...] = ("upstream", "downstream", "sre"),
 ) -> CoordinationDecision:
-    if decision.action != "reply" or not explicitly_addresses_all(text):
+    if decision.action not in {"reply", "delegate"} or not explicitly_addresses_all(text):
         return decision
+    # The owner named the audience. Model-selected self/offline/missing roles
+    # must not turn a team greeting into an invalid or partial dispatch.
+    selected = {item.role: item for item in decision.delegations}
     return CoordinationDecision(
         action="delegate",
         reply=decision.reply,
         task_summary="",
         delegations=[
-            CoordinationMessage(
+            selected.get(role) or CoordinationMessage(
                 role=role,
                 instruction=(
                     "オーナーからチーム全員への発言です。元の発言と会話文脈を踏まえ、"
@@ -307,7 +311,11 @@ def create_app(db=None, settings=None, token=None):
                     {
                         "current_owner_message": command.text,
                         "recent_discord_context_oldest_first": command.history,
-                        "available_roles": enabled_roles,
+                        "available_roles": {
+                            role: description for role, description in enabled_roles.items()
+                            if role != "coordinator"
+                        },
+                        "coordinator_identity": "coordinator: reply directly; never delegate to yourself",
                         "available_repositories": {
                             alias: {"repository": repo.repository, "description": repo.description,
                                     "creates_new_repository": repo.per_task}
@@ -363,8 +371,16 @@ def create_app(db=None, settings=None, token=None):
                     raise GuardError("Coordinator selected an unavailable specialist")
             return decision
         except GuardError as error:
+            logging.getLogger(__name__).warning(
+                "Coordinator decision rejected event=%s reason=%s",
+                command.event_id, scanner.redact_text(str(error)),
+            )
             raise HTTPException(409, str(error)) from error
         except Exception as error:
+            logging.getLogger(__name__).warning(
+                "Coordinator execution failed event=%s error_type=%s",
+                command.event_id, type(error).__name__,
+            )
             raise HTTPException(503, "Coordinator agent is temporarily unavailable") from error
 
     @app.post("/specialist-turn", dependencies=[Depends(authenticate)])

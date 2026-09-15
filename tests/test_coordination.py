@@ -342,3 +342,23 @@ def test_control_layer_does_not_schedule_a_role_already_selected_by_coordinator(
         [("upstream", handoff("downstream"))],
     )
     assert dispatches == []
+
+
+def test_team_introduction_uses_connected_audience_even_when_model_selects_self():
+    from agent_team.api import enforce_explicit_audience
+
+    selected = CoordinationDecision(
+        action="delegate", reply="みんなから自己紹介します。", task_summary="",
+        delegations=[
+            {"role": "coordinator", "instruction": "自己紹介して"},
+            {"role": "cto", "instruction": "設計と技術調査の担当として自己紹介して"},
+            {"role": "analyst", "instruction": "自己紹介して"},
+        ],
+    )
+    audience = ("cto", "backend_integrator", "security_sre")
+    result = enforce_explicit_audience(selected, "みんな自己紹介して", audience)
+    assert tuple(item.role for item in result.delegations) == audience
+    assert result.delegations[0].instruction == selected.delegations[1].instruction
+    assert result.reply == selected.reply
+    # A targeted request must not be expanded into an all-team dispatch.
+    assert enforce_explicit_audience(selected, "CTOに自己紹介してほしい", audience) is selected

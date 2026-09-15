@@ -91,9 +91,20 @@ def format_task_status(task: dict) -> str:
     ]
     if reason := data.get("reason"):
         lines.append(f"理由: {reason}")
-    if data.get("deployment_status"):
-        lines.append(f"Docker反映: {data['deployment_status']}")
-    lines.append(f"次: {task_next_step(state)}")
+    deployments = {
+        "awaiting_approval": ("承認待ち", "オーナーが対象SHAのDocker反映を承認"),
+        "queued": ("実行待ち", "更新担当が事前検証"),
+        "running": ("反映・検証中", "更新担当が稼働確認"),
+        "succeeded": ("反映済み", "なし"),
+        "failed": ("事前検証で停止", "SREが停止理由を確認"),
+        "rolled_back": ("旧版へ復旧済み", "SREが新しい版の失敗原因を確認"),
+        "rollback_failed": ("復旧に失敗", "人間がホスト側で復旧"),
+    }
+    deployment = deployments.get(data.get("deployment_status"))
+    if deployment:
+        lines.extend([f"Docker反映: {deployment[0]}", f"次: {deployment[1]}"])
+    else:
+        lines.append(f"次: {task_next_step(state)}")
     if proposal := data.get("requirements_proposal_url"):
         lines.append(f"最新の要件案: {proposal}")
     return "\n".join(lines)
@@ -756,7 +767,11 @@ async def serve():
             "/buttons/" + custom_id.removeprefix("team:"), json={**identity(interaction), "action": "button"}
         )
         text = (
-            f"{r.json()['id']}: {r.json()['state']}"
+            f"{r.json()['id']}: " + (
+                "Docker反映を受け付けました。"
+                if r.json().get("data", {}).get("deployment_status") == "queued"
+                else r.json()["state"]
+            )
             if r.is_success
             else str(r.json().get("detail", "承認失敗"))
         )

@@ -19,6 +19,16 @@ OLD = "sha256:" + "1" * 64
 NEW = "sha256:" + "2" * 64
 
 
+def test_merged_task_status_still_explains_pending_deployment():
+    from agent_team.adapters.discord import format_task_status
+
+    body = format_task_status({"id": "task", "state": "Merged",
+                               "data": {"deployment_status": "awaiting_approval"}})
+    assert "Docker反映: 承認待ち" in body
+    assert "次: オーナーが対象SHAのDocker反映を承認" in body
+    assert "自動継続なし" not in body
+
+
 def proposal(team):
     settings, db, *_ = team
     settings.deployment.enabled = True

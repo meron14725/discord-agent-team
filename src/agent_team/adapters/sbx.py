@@ -94,7 +94,8 @@ class SbxRunner:
         self.test_runtime_dir = Path(test_runtime_dir) if test_runtime_dir else None
 
     async def prepare_test_runtime(self, job_id, name, request):
-        if not (request.maintenance_paths and request.test_commands and self.test_runtime_dir):
+        authorized = bool(request.maintenance_paths) or request.kind == "review"
+        if not (authorized and request.test_commands and self.test_runtime_dir):
             return
         execution_policy(request)
         if not (self.test_runtime_dir / "requirements.txt").is_file() or not (

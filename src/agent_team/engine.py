@@ -558,6 +558,11 @@ class Engine:
             model_snapshot = self.github.source_context(source_repo, head or base)
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]
+            if kind == "review":
+                base_snapshot = self.github.source_context(source_repo, base)
+                context["base_source"] = base_snapshot["files"]
+                context["base_repository_manifest"] = base_snapshot["manifest"]
+                context["trusted_review_test_commands"] = repo.test_commands
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,
             "trusted_role_policy": self.prompt_context.role_policies[role],
@@ -577,7 +582,7 @@ class Engine:
             head_sha=task.data.get("head_sha", ""),
             prompt=json.dumps(context, ensure_ascii=False),
             files=files,
-            test_commands=repo.test_commands if kind in {"implement", "fix"} else [],
+            test_commands=repo.test_commands if kind in {"implement", "fix", "review"} else [],
             model=self.settings.model,
             timeout=self.settings.run_timeout,
         )
@@ -1085,6 +1090,11 @@ class Engine:
             if authority["body_hash"] != task.data["requirements_hash"]:
                 raise GuardError("GitHub Issue changed during implementation review")
             validate_review(result, authority["body"])
+            if result.decision == "approve":
+                if not response.tests or any(test.exit_code != 0 for test in response.tests):
+                    raise GuardError("Independent review tests did not pass")
+                if [test.command for test in response.tests] != repo.test_commands:
+                    raise GuardError("Review test evidence does not match configured commands")
             snapshot = self.github.snapshot(repo, task)
             if (snapshot["head_sha"], snapshot["base_sha"]) != (
                 result.head_sha,

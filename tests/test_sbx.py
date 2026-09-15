@@ -294,7 +294,7 @@ def test_runtime_support_is_retained_but_not_duplicated_into_maintenance_prompt(
     assert len(brokered_source_context(req)) < 2000
 
 
-def test_maintenance_test_runtime_installs_offline_and_only_when_authorized(tmp_path):
+def test_implementation_and_review_test_runtime_install_offline_only_when_authorized(tmp_path):
     (tmp_path / 'requirements.txt').write_text('pytest==9.1.1\n')
     (tmp_path / 'wheels').mkdir()
     (tmp_path / 'bin').mkdir()
@@ -318,6 +318,10 @@ def test_maintenance_test_runtime_installs_offline_and_only_when_authorized(tmp_
     assert install[:4] == ['exec','--user','root','sandbox']
     assert runner.calls[2][-2:] == ['/tmp/team-test-runtime/bin/patch','/usr/bin/patch']
     assert runner.calls[3][-2:] == ['/usr/bin/python3','/usr/local/bin/python']
+    runner.calls.clear()
+    review = request(role='cto', kind='review', test_commands=[['python','-m','pytest']])
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', review))
+    assert len(runner.calls) == 4
     (tmp_path / 'requirements.txt').unlink()
     with pytest.raises(GuardError, match='unavailable'):
         asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))

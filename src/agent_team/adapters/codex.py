@@ -599,6 +599,7 @@ class MockRunner:
             files = {
                 "tests/test_example.py": "import unittest\nfrom src.example import greeting\n\nclass TestGreeting(unittest.TestCase):\n    def test_greeting(self):\n        self.assertEqual(greeting(), 'hello')\n"
             }
+        if request.kind in {"implement", "fix", "review"}:
             tests = [
                 TestEvidence(command=c, exit_code=0, output="MOCK: simulated success")
                 for c in request.test_commands

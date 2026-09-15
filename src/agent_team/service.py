@@ -330,11 +330,12 @@ class TaskService:
                     transition(s, task, "DraftingRequirements", "Issue本文へ反映された要件案を再照合")
                     recoverable = None
                 else:
-                    recoverable = s.scalar(
+                    latest = s.scalar(
                         select(Job)
-                        .where(Job.task_id == task.id, Job.status == "failed")
+                        .where(Job.task_id == task.id)
                         .order_by(Job.created.desc())
                     )
+                    recoverable = latest if latest and latest.status == "failed" else None
                     if task.workflow_version == 2 and task.data.get("reason") == "案件のモデル実行上限":
                         budget = s.scalar(select(ExecutionBudget).where(
                             ExecutionBudget.task_id == task.id
@@ -392,7 +393,12 @@ class TaskService:
                     )
                 elif task.data.get("pr"):
                     transition(s, task, "Reviewing", "GitHub再照合後に新規レビュー")
-                    enqueue(s, task, "review")
+                    if task.workflow_version == 2:
+                        from .engine import Engine
+
+                        Engine.enqueue_v2(s, task, "review", "cto")
+                    else:
+                        enqueue(s, task, "review")
                 elif task.data.get("spec_approval"):
                     transition(s, task, "Queued")
                     enqueue(s, task, "implement")

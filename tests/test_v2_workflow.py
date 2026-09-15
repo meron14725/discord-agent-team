@@ -740,6 +740,67 @@ def test_v2_retry_requeues_failed_requirements_job(team):
         assert (job.status, job.attempt, job.owner, job.lease) == ("queued", 0, "", 0)
 
 
+def test_v2_retry_uses_latest_completed_review_instead_of_older_failed_fix(team):
+    settings, db, _, service, _, command = team
+    settings.workflow_v2.enabled = True
+    settings.workflow_v2.repository_aliases = ["demo"]
+    with db.transaction() as session:
+        task = service.v2.create_task(
+            session,
+            task_id="TASK-RETRY-REVIEW",
+            repo="demo",
+            repository="example/demo",
+            summary="review retry",
+        )
+        task.state = "Blocked"
+        task.data = {
+            **task.data,
+            "pr": 8,
+            "requirements_hash": "sha256:req",
+            "plan_version": 1,
+            "plan_hash": "sha256:plan",
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+        }
+        initial = session.scalar(select(Job).where(Job.task_id == task.id))
+        initial.status = "cancelled"
+        initial.created = 0
+        old_fix = Job(
+            task_id=task.id,
+            role="backend_integrator",
+            kind="fix",
+            status="failed",
+            created=1,
+            data={"workflow_version": 2},
+        )
+        latest_review = Job(
+            task_id=task.id,
+            role="cto",
+            kind="review",
+            status="done",
+            created=2,
+            data={"workflow_version": 2},
+        )
+        session.add_all((old_fix, latest_review))
+
+    retried = command("retry", task_id="TASK-RETRY-REVIEW")
+
+    assert retried["state"] == "Reviewing"
+    with db.transaction() as session:
+        jobs = list(
+            session.scalars(
+                select(Job)
+                .where(Job.task_id == "TASK-RETRY-REVIEW")
+                .order_by(Job.created)
+            )
+        )
+        assert jobs[1].status == "failed"
+        assert jobs[2].status == "done"
+        assert jobs[3].status == "queued"
+        assert (jobs[3].kind, jobs[3].role) == ("review", "cto")
+        assert jobs[3].data["head_sha"] == "b" * 40
+
+
 def test_v2_stalled_job_retries_once_then_blocks_and_notifies_sre(team):
     settings, db, _, _, engine, _ = team
     settings.workflow_v2.enabled = True

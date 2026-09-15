@@ -17,8 +17,8 @@ repos:
     allowed_paths: ['src/*', 'tests/*', 'docs/tasks/*', 'docs/work-items/*']
 auth_mode: chatgpt
 model: '' # Subscription CLI default; pin an available model if desired.
-daily_run_limit: 30
-task_run_limit: 10
+daily_run_limit: 150
+task_run_limit: 50
 daily_budget_usd: 0
 task_budget_usd: 0
 run_reservation_usd: 0 # Conservative reservation per invocation; NOT actual billing.
@@ -28,7 +28,9 @@ run_timeout: 1200
 poll_seconds: 60
 approval_seconds: 86400
 max_files: 100
+source_max_files: 190 # Read-only repository context; publication remains limited by max_files.
 max_bytes: 2000000
+source_max_bytes: 4000000 # Read-only input; publication remains limited by max_bytes.
 auto_max_lines: 200
 message_content: false # /answer works without privileged Message Content Intent.
 natural_language_requests: false # true: allowed owners' new general messages become requests.
@@ -191,11 +193,11 @@ workflow_v2:
   github_issue_conditional_updates: false # GitHub.comのIssue PATCHは条件付き更新非対応。falseを維持する。
   normal_concurrency: 4
   privileged_concurrency: 1
-  model_calls_per_task: 30
-  consultations_per_task: 15
-  consultations_per_topic: 5
-  plan_revision_limit: 3
-  implementation_revision_limit: 3
+  model_calls_per_task: 150
+  consultations_per_task: 75
+  consultations_per_topic: 25
+  plan_revision_limit: 15
+  implementation_revision_limit: 15
   heartbeat_seconds: 120
   stalled_seconds: 600
   renderer_url: http://renderer:8091

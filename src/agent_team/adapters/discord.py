@@ -648,6 +648,7 @@ async def serve():
     ]:
         register(name, description)
 
+    @coordinator.event
     @upstream.event
     async def on_interaction(interaction):
         custom_id = (interaction.data or {}).get("custom_id", "")

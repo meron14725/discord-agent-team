@@ -6,6 +6,7 @@ from .db import (
     Approval,
     ApprovalGrant,
     Event,
+    ExecutionBudget,
     Job,
     Operation,
     Outbox,
@@ -162,6 +163,22 @@ class TaskService:
                     raise GuardError("Cannot revise this task")
                 if not text.strip():
                     raise GuardError("Answer cannot be empty")
+                latest = s.scalar(select(Job).where(Job.task_id == task.id).order_by(Job.created.desc()))
+                if (action == "answer" and task.state == "Blocked" and latest
+                    and latest.kind in {"implement", "fix"} and latest.status == "done"
+                    and latest.data.get("response", {}).get("result", {}).get("status")
+                    in {"blocked", "needs_clarification"}
+                    and task.data.get("requirements_approval_id") and task.data.get("plan_approval_id")):
+                    from .engine import Engine
+
+                    if not Engine.identity_current(task, latest):
+                        raise GuardError("Clarification targets a stale implementation")
+                    task.data = {**task.data, "execution_clarifications":
+                                 task.data.get("execution_clarifications", []) + [text]}
+                    transition(s, task, "Queued" if latest.kind == "implement" else "Fixing",
+                               "担当への確認回答を同じ承認済み計画へ引き継いで再開")
+                    Engine.enqueue_v2(s, task, latest.kind, latest.role)
+                    return self.serialize(task)
                 invalidate(s, task)
                 task.data = {
                     **task.data,
@@ -313,11 +330,26 @@ class TaskService:
                     transition(s, task, "DraftingRequirements", "Issue本文へ反映された要件案を再照合")
                     recoverable = None
                 else:
-                    recoverable = s.scalar(
+                    latest = s.scalar(
                         select(Job)
-                        .where(Job.task_id == task.id, Job.status == "failed")
+                        .where(Job.task_id == task.id)
                         .order_by(Job.created.desc())
                     )
+                    recoverable = latest if latest and latest.status == "failed" else None
+                    if task.workflow_version == 2 and task.data.get("reason") == "案件のモデル実行上限":
+                        budget = s.scalar(select(ExecutionBudget).where(
+                            ExecutionBudget.task_id == task.id
+                        ).with_for_update())
+                        if budget is None or budget.model_reservations >= self.settings.workflow_v2.model_calls_per_task:
+                            raise GuardError("案件のモデル実行上限が未解消です")
+                        recoverable = s.scalar(select(Job).where(
+                            Job.task_id == task.id
+                        ).order_by(Job.created.desc()))
+                        if recoverable is None or recoverable.status != "cancelled" or recoverable.data.get("response"):
+                            raise GuardError("Budget-stopped job is unavailable")
+                        for key in ("requirements_hash", "plan_version", "plan_hash", "base_sha", "head_sha"):
+                            if recoverable.data.get(key) != task.data.get(key, 0 if key == "plan_version" else ""):
+                                raise GuardError("Budget-stopped job has stale context")
                 if task.state == "DraftingRequirements":
                     pass
                 elif task.workflow_version == 2 and action == "retry" and recoverable:
@@ -361,7 +393,12 @@ class TaskService:
                     )
                 elif task.data.get("pr"):
                     transition(s, task, "Reviewing", "GitHub再照合後に新規レビュー")
-                    enqueue(s, task, "review")
+                    if task.workflow_version == 2:
+                        from .engine import Engine
+
+                        Engine.enqueue_v2(s, task, "review", "cto")
+                    else:
+                        enqueue(s, task, "review")
                 elif task.data.get("spec_approval"):
                     transition(s, task, "Queued")
                     enqueue(s, task, "implement")

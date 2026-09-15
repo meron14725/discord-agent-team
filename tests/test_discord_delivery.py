@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -19,6 +20,62 @@ from agent_team.discord_delivery import (
     task_waits_for_owner,
 )
 from agent_team.persona import PersonaDefinition, persona_formatter, render_persona_reply
+
+
+def test_approval_buttons_work_on_coordinator_and_upstream(monkeypatch):
+    from agent_team.adapters import discord as gateway
+    from agent_team.config import Settings
+
+    class SetupComplete(Exception):
+        pass
+
+    clients = []
+    client_type = gateway.discord.Client
+
+    def client_factory(**kwargs):
+        client = client_type(**kwargs)
+        client.start = AsyncMock(side_effect=SetupComplete)
+        client.wait_until_ready = AsyncMock(side_effect=SetupComplete)
+        clients.append(client)
+        return client
+
+    api = SimpleNamespace(post=AsyncMock(), aclose=AsyncMock())
+    api.post.return_value = SimpleNamespace(
+        is_success=True, json=lambda: {"id": "TASK-test", "state": "PlanningImplementation"}
+    )
+    monkeypatch.setattr(gateway.discord, "Client", client_factory)
+    monkeypatch.setattr(gateway, "load_settings", lambda: Settings(guild_id="123"))
+    monkeypatch.setattr(gateway, "secret", lambda _: "test-token-not-a-real-credential")
+    monkeypatch.setattr(gateway.httpx, "AsyncClient", lambda **_: api)
+
+    async def scenario():
+        with pytest.raises(SetupComplete):
+            await gateway.serve()
+        for client in clients[:2]:
+            response = SimpleNamespace(defer=AsyncMock())
+            interaction = SimpleNamespace(
+                data={"custom_id": "team:approval-event"}, id=456,
+                user=SimpleNamespace(id=789), guild_id=123, channel_id=321,
+                response=response, followup=SimpleNamespace(send=AsyncMock()),
+            )
+
+            async def post(path, *, json):
+                response.defer.assert_awaited_once_with(ephemeral=True)
+                assert path == "/buttons/approval-event"
+                assert json == {
+                    "event_id": "456", "actor": "789", "guild": "123", "channel": "321",
+                    "action": "button",
+                }
+                return api.post.return_value
+
+            api.post.side_effect = post
+            await client.on_interaction(interaction)
+            interaction.followup.send.assert_awaited_once_with(
+                "TASK-test: PlanningImplementation", ephemeral=True
+            )
+        assert api.post.await_count == 2
+
+    asyncio.run(scenario())
 
 
 def decision(action="reply", **changes):

@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import logging
 import time
@@ -8,6 +9,7 @@ from sqlalchemy import select
 
 from .contracts import RunRequest, RunResponse
 from .db import (
+    ApprovalGrant,
     Artifact,
     Consultation,
     Delegation,
@@ -31,8 +33,8 @@ from .explanations import (
     RemoteExplanationRenderer,
     bind_explanation,
 )
-from .planning import validate_plan, validate_review_coverage
-from .policy import GuardError, digest, merge_gate, validate_files, validate_review
+from .planning import REQUIRED_PLAN_SECTIONS, validate_plan, validate_review_coverage
+from .policy import GuardError, digest, maintenance_paths, merge_gate, validate_files, validate_review
 from .prompt_context import load_agent_prompt_context, load_vendor_skill_context
 from .service import STOPPED, enqueue, invalidate, notify, transition
 from .workflow import WorkflowV2Service
@@ -369,6 +371,7 @@ class Engine:
         )
 
     def prepare_v2(self, job_id, fence, task, job):
+        scoped_paths = maintenance_paths(self.settings, task) if job.kind in {"implement", "fix", "review"} else []
         repo = self.settings.repo_for(task)
         kind, role = job.kind, job.role
         provisioned_now = repo.per_task and not task.data.get("provisioned")
@@ -437,7 +440,9 @@ class Engine:
                     )
                 },
             }
-            files = {}
+            model_snapshot = self.github.source_context(repo, base)
+            files = model_snapshot["files"]
+            context["repository_manifest"] = model_snapshot["manifest"]
         else:
             issue_number = task.data.get("requirements_issue")
             if not issue_number:
@@ -447,19 +452,57 @@ class Engine:
                 "updated_at"
             ] != task.data.get("requirements_updated_at"):
                 raise GuardError("GitHub Issue changed after requirements approval")
+            with self.db.transaction() as session:
+                reference = session.get(RequirementsReference, task.requirements_reference_id)
+                approval = session.scalar(select(ApprovalGrant).where(
+                    ApprovalGrant.task_id == task.id,
+                    ApprovalGrant.stage == "requirements",
+                    ApprovalGrant.confirmation_id == task.data.get("requirements_approval_id"),
+                    ApprovalGrant.target_hash == authority["body_hash"],
+                ))
+                if (
+                    reference is None or reference.status != "approved"
+                    or reference.repository != repo.repository
+                    or reference.issue_number != issue_number
+                    or reference.body_hash != authority["body_hash"]
+                    or approval is None or approval.consumed_at is None
+                ):
+                    raise GuardError("Verified requirements approval is unavailable")
+                approval_evidence = {
+                    "status": "approved", "stage": "requirements",
+                    "task_id": task.id, "repository": repo.repository,
+                    "issue_number": issue_number, "spec_version": task.spec_version,
+                    "body_hash": approval.target_hash, "actor_id": approval.actor_id,
+                    "confirmation_id": approval.confirmation_id,
+                    "approved_at": approval.consumed_at,
+                    "scope": "Requirements approval permits implementation planning only; plan, implementation and merge approvals are separate.",
+                    "authority": "Verified control-plane approval record for this exact Issue body. Draft-time status text in the immutable body is historical; do not ask the owner to repeat this requirements approval.",
+                }
             plan_body = ""
             head = task.data.get("head_sha", "")
             if task.data.get("plan_path"):
-                plan_source = self.github.source(repo, head or base)
+                plan_source = self.github.source(
+                    repo, head or base, paths=[task.data["plan_path"]]
+                )
                 plan_body = plan_source.get(task.data["plan_path"], "")
                 if task.data.get("plan_hash") and digest(plan_body) != task.data["plan_hash"]:
                     raise GuardError("Implementation plan changed after approval")
             context = {
                 "owner_request": task.data["summary"],
+                "approved_spec": authority["body"],
                 "approved_requirements": authority["body"],
+                "controller_managed_spec": {
+                    "authority": "github_issue",
+                    "issue_number": authority["number"],
+                    "updated_at": authority["updated_at"],
+                    "body_hash": authority["body_hash"],
+                    "body": authority["body"],
+                },
                 "required_acceptance_ids": task.data.get("requirements_acceptance_ids", []),
                 "implementation_plan": plan_body,
                 "findings": task.data.get("findings", []),
+                "execution_clarifications": task.data.get("execution_clarifications", []),
+                "clarification_scope": "Clarifications do not amend approved requirements or plan. If a reply requires scope changes, report blocked and request an explicit revision.",
             }
             if kind == "consult":
                 with self.db.transaction() as session:
@@ -477,12 +520,76 @@ class Engine:
                     "implementation_plan": plan_body,
                     "required_output": "判断材料、選択肢、推奨案、未解決事項、参照資料",
                 }
-            if kind in {"plan", "review_plan"}:
-                files = {}
-            else:
-                model_snapshot = self.github.source_context(repo, head or base)
-                files = model_snapshot["files"]
-                context["repository_manifest"] = model_snapshot["manifest"]
+            context["trusted_requirements_approval"] = approval_evidence
+            if kind in {"implement", "fix"}:
+                with self.db.transaction() as session:
+                    plan = session.get(PlanVersion, task.current_plan_version_id)
+                    grant = session.scalar(select(ApprovalGrant).where(
+                        ApprovalGrant.task_id == task.id,
+                        ApprovalGrant.stage == "plan",
+                        ApprovalGrant.confirmation_id == task.data.get("plan_approval_id"),
+                    ))
+                    if (plan is None or grant is None or not grant.consumed_at
+                        or (grant.expires is not None and grant.expires <= time.time())
+                        or grant.target_hash != plan.content_hash
+                        or grant.target_sha != plan.base_sha
+                        or plan.content_hash != task.data.get("plan_hash")
+                        or plan.base_sha != task.data.get("base_sha")
+                        or plan.review_status != "approved"):
+                        raise GuardError("Verified implementation plan approval is unavailable")
+                    context["trusted_plan_approval"] = {
+                        "status": "approved", "stage": "plan", "version": plan.version,
+                        "plan_hash": grant.target_hash, "base_sha": grant.target_sha,
+                        "actor_id": grant.actor_id, "confirmation_id": grant.confirmation_id,
+                        "approved_at": grant.consumed_at,
+                        "scope": "Implement this approved plan. Publication, deployment and merge are separate gates.",
+                    }
+                if job.data.get("patch_format_retry"):
+                    context["validation_feedback"] = (
+                        "The previous completed result contained no patches. Return the implementation "
+                        "as non-empty unified diff proposals in patches; do not merely describe changes. "
+                        "If blocked or needing clarification, return that status and specific questions instead."
+                    )
+            if kind == "plan":
+                context["required_plan_sections"] = list(REQUIRED_PLAN_SECTIONS)
+                context["plan_format_contract"] = (
+                    "Use Markdown headings containing every exact required_plan_sections label. "
+                    "Give each required_acceptance_ids item its own mapping to changes and tests; "
+                    "do not abbreviate acceptance IDs as a range."
+                )
+            # Tests and loaders need their existing configuration/data as read-only
+            # inputs. This does not add any write exceptions for those files.
+            support_paths = ["pyproject.toml", "uv.lock", "prompts/*", "vendor/*", "docker/seccomp*.json",
+                             "compose.yaml", "compose.sandbox-test.yaml", "THIRD_PARTY-LICENSES.md"] if scoped_paths else []
+            source_repo = repo.model_copy(update={"allowed_paths": repo.allowed_paths + scoped_paths + support_paths})
+            model_snapshot = self.github.source_context(source_repo, head or base)
+            files = model_snapshot["files"]
+            context["repository_manifest"] = model_snapshot["manifest"]
+            if kind == "review":
+                review_snapshot = self.github.snapshot(repo, task)
+                if (review_snapshot["head_sha"], review_snapshot["base_sha"]) != (head, base):
+                    raise GuardError("PR changed while preparing independent review")
+                changed_paths = sorted(review_snapshot["files"])
+                base_files = self.github.source(repo, base, paths=set(changed_paths))
+                diff_parts = []
+                for path in changed_paths:
+                    before = base_files.get(path)
+                    after = review_snapshot["files"].get(path)
+                    diff_parts.extend(
+                        difflib.unified_diff(
+                            (before or "").splitlines(keepends=True),
+                            (after or "").splitlines(keepends=True),
+                            fromfile=("/dev/null" if before is None else "a/" + path),
+                            tofile=("/dev/null" if after is None else "b/" + path),
+                        )
+                    )
+                context["controller_base_to_head_diff"] = {
+                    "base_sha": base,
+                    "head_sha": head,
+                    "changed_paths": changed_paths,
+                    "unified_diff": "".join(diff_parts),
+                }
+                context["trusted_review_test_commands"] = repo.test_commands
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,
             "trusted_role_policy": self.prompt_context.role_policies[role],
@@ -497,6 +604,8 @@ class Engine:
             **context,
         }
         return RunRequest(
+            maintenance_paths=scoped_paths if kind in {"implement", "fix"} else [],
+            resume_patch_job_id=job.data.get("resume_patch_job_id", ""),
             auth_mode=self.settings.auth_mode,
             job_id=job_id,
             role=role,
@@ -508,7 +617,7 @@ class Engine:
             head_sha=task.data.get("head_sha", ""),
             prompt=json.dumps(context, ensure_ascii=False),
             files=files,
-            test_commands=repo.test_commands if kind in {"implement", "fix"} else [],
+            test_commands=repo.test_commands if kind in {"implement", "fix", "review"} else [],
             model=self.settings.model,
             timeout=self.settings.run_timeout,
         )
@@ -708,6 +817,7 @@ class Engine:
                 job.status = "done"
                 self.release_repository_lease(session, job)
                 if result.status == "needs_clarification":
+                    transition(session, task, "Blocked", "担当からの確認待ち: " + result.summary[:900])
                     notify(session, task, "\n".join(result.questions[:5]), role=job.role)
                 else:
                     transition(session, task, "Blocked", result.summary[:1000])
@@ -856,7 +966,7 @@ class Engine:
             with self.db.transaction() as session:
                 task, job = self.current(session, job_id, fence)
                 plan = session.get(PlanVersion, task.current_plan_version_id)
-                source = self.github.source(repo, task.data["head_sha"])
+                source = self.github.source_context(repo, task.data["head_sha"])["files"]
                 body = source.get(plan.path, "")
                 try:
                     validate_review_coverage(
@@ -917,7 +1027,8 @@ class Engine:
             return
         if kind in {"implement", "fix"}:
             files = dict(response.files)
-            validate_files(files, self.settings, task.id, task.data["requirements_hash"])
+            validate_files(files, self.settings, task.id, task.data["requirements_hash"],
+                           maintenance=maintenance_paths(self.settings, task))
             protected_plan = task.data["plan_path"]
             if protected_plan in files:
                 raise GuardError("Approved implementation plan is immutable")
@@ -1014,6 +1125,11 @@ class Engine:
             if authority["body_hash"] != task.data["requirements_hash"]:
                 raise GuardError("GitHub Issue changed during implementation review")
             validate_review(result, authority["body"])
+            if result.decision == "approve":
+                if not response.tests or any(test.exit_code != 0 for test in response.tests):
+                    raise GuardError("Independent review tests did not pass")
+                if [test.command for test in response.tests] != repo.test_commands:
+                    raise GuardError("Review test evidence does not match configured commands")
             snapshot = self.github.snapshot(repo, task)
             if (snapshot["head_sha"], snapshot["base_sha"]) != (
                 result.head_sha,
@@ -1078,6 +1194,15 @@ class Engine:
             except GuardError:
                 return
             self.release_repository_lease(s, job)
+            if (task.workflow_version == 2 and job.kind in {"implement", "fix"}
+                and isinstance(error, GuardError)
+                and str(error) == "Brokered implementation returned no patch proposal"
+                and not job.data.get("patch_format_retry")):
+                job.data = {**job.data, "patch_format_retry": True}
+                job.status = "queued"
+                notify(s, task, "実装差分が返されなかったため、統括が出力形式の修正指示を付けて1回再依頼します。",
+                       role="coordinator")
+                return
             if task.workflow_version == 2 and not isinstance(error, GuardError):
                 failure_target = {
                     "prepare": "GitHub準備処理",
@@ -1136,11 +1261,23 @@ class Engine:
                 _, job = self.current(s, job_id, fence)
                 saved = job.data.get("response")
                 saved_request = job.data.get("request")
-            request = (
-                RunRequest.model_validate(saved_request)
-                if saved
-                else await asyncio.to_thread(self.prepare, job_id, fence)
-            )
+            if saved_request:
+                request = RunRequest.model_validate(saved_request)
+            else:
+                # Fetching a repository can outlive the lease before the model starts.
+                preparation = asyncio.create_task(asyncio.to_thread(self.prepare, job_id, fence))
+                try:
+                    while not preparation.done():
+                        await asyncio.wait({preparation}, timeout=min(15, self.settings.lease_seconds / 3))
+                        if not preparation.done():
+                            await asyncio.to_thread(self.heartbeat, job_id, fence)
+                    request = preparation.result()
+                finally:
+                    if not preparation.done():
+                        preparation.cancel()
+                with self.db.transaction() as session:
+                    _, current_job = self.current(session, job_id, fence)
+                    current_job.data = {**current_job.data, "request": request.model_dump()}
             phase = "run"
             execution = asyncio.create_task(self.runner.run(request)) if not saved else None
             if execution:
@@ -1174,6 +1311,7 @@ class Engine:
 
     def reconcile(self):
         self.db.check_leader()
+        self.recover_connected_v2_workers()
         self.recover_after_runtime_change()
         self.recover_invalid_spec_finding()
         self.report_slow_v2_starts()
@@ -1187,11 +1325,19 @@ class Engine:
             try:
                 with self.db.transaction() as s:
                     task = task_lock(s, task_id)
+                    if task.state in {"Paused", "Cancelled"}:
+                        continue
                     if not task.data.get("pr"):
                         continue
                     repo = self.settings.repo_for(task)
                     snap = self.github.snapshot(repo, task)
                     if task.workflow_version == 2:
+                        # Requirements drafting/confirmation owns Issue synchronization.
+                        # Reconciliation must not cancel the job that handles that change.
+                        if task.state in {"DraftingRequirements", "AwaitingRequirementsConfirmation"} or (
+                            task.state == "Blocked" and not task.data.get("requirements_approval_id")
+                        ):
+                            continue
                         authority = self.github.issue_reference(
                             repo, task.data["requirements_issue"]
                         )
@@ -1216,7 +1362,7 @@ class Engine:
                             )
                             self.enqueue_v2(s, task, "draft_requirements", "cto")
                             continue
-                        plan_source = self.github.source(repo, snap["head_sha"])
+                        plan_source = self.github.source_context(repo, snap["head_sha"])["files"]
                         if digest(plan_source.get(task.data.get("plan_path", ""), "")) != task.data.get(
                             "plan_hash"
                         ):
@@ -1260,7 +1406,10 @@ class Engine:
                         invalidate(s, task)
                         task.data = {**task.data, "head_sha": snap["head_sha"]}
                         transition(s, task, "Reviewing", "head更新により承認を失効")
-                        enqueue(s, task, "review")
+                        if task.workflow_version == 2:
+                            self.enqueue_v2(s, task, "review", "cto")
+                        else:
+                            enqueue(s, task, "review")
                         continue
                     if task.state not in {
                         "AwaitingChecks",
@@ -1507,6 +1656,37 @@ class Engine:
                     operation = session.get(Operation, operation_id)
                     operation.status = "done"
                     operation.data = {**operation.data, "attempts": operation.data.get("attempts", 0) + 1}
+
+    def recover_connected_v2_workers(self):
+        """Retry a connection failure once after an authenticated healthy response."""
+        available = getattr(self.runner, "v2_available", None)
+        if available is None:
+            return
+        with self.db.transaction() as s:
+            for task in s.scalars(select(Task).where(
+                Task.workflow_version == 2, Task.state == "Blocked"
+            ).with_for_update()):
+                if not task.data.get("reason", "").startswith("ConnectError:"):
+                    continue
+                job = s.scalar(select(Job).where(Job.task_id == task.id).order_by(Job.created.desc()))
+                if (job is None or job.status != "failed" or job.data.get("connection_recovery")
+                    or job.data.get("response") or task.data.get("failed_phase") != "run"
+                    or job.kind not in {"draft_requirements", "plan", "review_plan", "implement", "fix", "review"}
+                    or self.settings.role_registry.role(job.role).parallel_class == "privileged"):
+                    continue
+                if not self.identity_current(task, job):
+                    continue
+                budget = s.scalar(select(ExecutionBudget).where(ExecutionBudget.task_id == task.id))
+                if budget is None or budget.model_reservations >= self.settings.workflow_v2.model_calls_per_task:
+                    continue
+                if not available():
+                    continue
+                job.data = {**job.data, "connection_recovery": True}
+                job.status, job.attempt, job.owner, job.lease = "queued", 0, "", 0
+                state = {"draft_requirements": "DraftingRequirements", "plan": "PlanningImplementation",
+                         "review_plan": "ReviewingImplementationPlan", "implement": "Queued",
+                         "fix": "Fixing", "review": "Reviewing"}[job.kind]
+                transition(s, task, state, "統括がworkerの復旧を確認し、停止した担当処理を1回再依頼")
 
     def recover_after_runtime_change(self):
         """Requeue only when a missing executable was fixed by trusted configuration."""

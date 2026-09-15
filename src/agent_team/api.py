@@ -731,7 +731,7 @@ def create_app(db=None, settings=None, token=None):
         return {"ok": True}
 
     @app.post("/buttons/{message_id}", dependencies=[Depends(authenticate)])
-    def button(message_id: str, command: Command):
+    async def button(message_id: str, command: Command):
         with db.transaction() as s:
             out = s.get(Outbox, message_id)
             if out is None or not out.data.get("approval"):
@@ -741,7 +741,7 @@ def create_app(db=None, settings=None, token=None):
             for name in ("version", "hash", "head_sha", "base_sha", "confirmation_id"):
                 if name in out.data:
                     setattr(command, name, out.data[name])
-        return globals_command(command)
+        return await globals_command(command)
 
     globals_command = command
 

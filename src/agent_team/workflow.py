@@ -422,7 +422,7 @@ class WorkflowV2Service:
                         task,
                         origin_event_id=f"plan-review-limit-{plan.id}",
                         purpose=(
-                            "実装計画の修正を3回行いましたが、重大な指摘が残っています。"
+                            f"実装計画の修正を{self.settings.workflow_v2.plan_revision_limit}回行いましたが、重大な指摘が残っています。"
                             "指摘内容と次の方針を確認してください。"
                         ),
                         title=f"{task.id} 計画レビュー停止",

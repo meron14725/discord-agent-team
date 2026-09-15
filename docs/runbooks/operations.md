@@ -14,6 +14,11 @@ GitHub API実行中はDB行ロックにより停止と操作を直列化する�
 
 `docker compose up -d`、本接続では `docker compose --profile live up -d`。
 期限切れリースは新fenceで取得。保存済み成果物は再利用し、Issue/PRはmarker・feature branchで照合する。
+
+スコープを承認済みの基盤実装では、生成差分をホストworkerの`state_dir/results`へ保存する。
+テスト環境の障害を直して再検証する場合は、新しいimplementジョブの`resume_patch_job_id`に保存元ジョブIDを指定できる。
+同じ案件・仕様・コミット・許可パスであることと、差分内の秘密情報・変更範囲を再検証し、モデルを再実行せず新しいVMで適用とテストを行う。
+保存済み差分はテスト成功や公開の証拠ではない。承認や通常のレビューを省略する用途には使わない。
 外部通信の結果が不明でも同じ案件の別PRを勝手に作らない。GitHubが手動で閉じられていたらBlocked。
 
 `/retry` は原因解消後に実行。仕様不足は `/revise` で承認を取り直す。

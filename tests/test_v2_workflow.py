@@ -480,10 +480,13 @@ def test_v2_external_head_change_enqueues_identity_bound_cto_review(team):
     assert audit_copy["authority"] == "github_issue"
     assert audit_copy["body"] == context["approved_spec"] == context["approved_requirements"]
     assert audit_copy["body_hash"] == request.spec_hash
-    assert context["base_source"] == github.source_context(
-        settings.repos["demo"], request.base_sha
-    )["files"]
-    assert context["base_repository_manifest"]
+    controller_diff = context["controller_base_to_head_diff"]
+    assert controller_diff["base_sha"] == request.base_sha
+    assert controller_diff["head_sha"] == request.head_sha
+    assert controller_diff["changed_paths"] == sorted(controller_diff["changed_paths"])
+    assert controller_diff["changed_paths"]
+    assert "--- " in controller_diff["unified_diff"]
+    assert "+++ " in controller_diff["unified_diff"]
     assert context["trusted_review_test_commands"] == settings.repos["demo"].test_commands
     assert request.test_commands == settings.repos["demo"].test_commands
 

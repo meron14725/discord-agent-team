@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import logging
 import time
@@ -559,9 +560,29 @@ class Engine:
             files = model_snapshot["files"]
             context["repository_manifest"] = model_snapshot["manifest"]
             if kind == "review":
-                base_snapshot = self.github.source_context(source_repo, base)
-                context["base_source"] = base_snapshot["files"]
-                context["base_repository_manifest"] = base_snapshot["manifest"]
+                review_snapshot = self.github.snapshot(repo, task)
+                if (review_snapshot["head_sha"], review_snapshot["base_sha"]) != (head, base):
+                    raise GuardError("PR changed while preparing independent review")
+                changed_paths = sorted(review_snapshot["files"])
+                base_files = self.github.source(repo, base, paths=set(changed_paths))
+                diff_parts = []
+                for path in changed_paths:
+                    before = base_files.get(path)
+                    after = review_snapshot["files"].get(path)
+                    diff_parts.extend(
+                        difflib.unified_diff(
+                            (before or "").splitlines(keepends=True),
+                            (after or "").splitlines(keepends=True),
+                            fromfile=("/dev/null" if before is None else "a/" + path),
+                            tofile=("/dev/null" if after is None else "b/" + path),
+                        )
+                    )
+                context["controller_base_to_head_diff"] = {
+                    "base_sha": base,
+                    "head_sha": head,
+                    "changed_paths": changed_paths,
+                    "unified_diff": "".join(diff_parts),
+                }
                 context["trusted_review_test_commands"] = repo.test_commands
         context = {
             "trusted_company_policy": self.prompt_context.company_policy,

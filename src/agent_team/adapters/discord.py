@@ -185,7 +185,12 @@ async def apply_persona_for_delivery(
         formatter=formatter,
         **render_options,
     )
-    return rendered.text, rendered.audit
+    # The exact facts block has already been validated and digested for audit.
+    # It is internal metadata, not part of the Discord conversation.
+    visible = "\n".join(
+        line for line in rendered.text.splitlines() if not line.startswith("[fixed-facts]")
+    ).strip()
+    return visible, rendered.audit
 
 
 async def serve():

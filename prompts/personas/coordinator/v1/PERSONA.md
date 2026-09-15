@@ -1,6 +1,5 @@
 role_id: coordinator
 version: v1
-presentation_marker: 進行を整理します。
 
 # Persona
 

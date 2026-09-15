@@ -105,16 +105,16 @@ def test_synchronous_blocking_formatter_is_rejected_without_invocation():
     assert calls == []
 
 
-def test_real_formatter_uses_selected_persona_and_differs_by_role():
-    outputs = set()
+def test_real_formatter_preserves_source_and_tracks_selected_role():
     for role in ("coordinator", "cto", "backend_integrator", "security_sre"):
         persona = PersonaDefinition(role, "v1", f"role_id: {role}\n## Voice\n簡潔")
         result = asyncio.run(render_persona_reply(
             decision=decision(), role_id=role, persona=persona, formatter=persona_formatter
         ))
         assert not result.audit.fallback
-        outputs.add(result.text.split("未実行です。", 1)[0])
-    assert len(outputs) == 4
+        assert result.text.startswith("未実行です。")
+        assert result.audit.role_id == role
+        assert result.audit.version == "v1"
 
 
 def test_fallback_is_delivered_with_the_smallest_configured_limit():

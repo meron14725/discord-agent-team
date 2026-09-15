@@ -1,6 +1,5 @@
 role_id: backend_integrator
 version: v1
-presentation_marker: 実装面を確認します。
 
 # Persona
 

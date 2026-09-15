@@ -178,7 +178,7 @@ async def send_chunked(
             await receipts.save(key, message.id)
             suffix = "\n" + part.marker
             if message.content.endswith(suffix):
-                await message.edit(
+                message = await message.edit(
                     content=message.content[:-len(suffix)],
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -199,7 +199,7 @@ async def replace_with_chunked(
     """Replace a progress message, then use the common idempotent part boundary."""
     parts = discord_parts(text, event_id)
     mentions = allowed_mentions or discord.AllowedMentions.none()
-    await placeholder.edit(content=parts[0].content, allowed_mentions=mentions)
+    placeholder = await placeholder.edit(content=parts[0].content, allowed_mentions=mentions)
     return await send_chunked(
         channel,
         text,
@@ -238,6 +238,47 @@ async def apply_persona_for_delivery(
         line for line in rendered.text.splitlines() if not line.startswith("[fixed-facts]")
     ).strip()
     return visible, rendered.audit
+
+
+async def render_specialist_for_delivery(
+    *,
+    decision: SpecialistDecision,
+    role_id: str,
+    persona: PersonaDefinition | None,
+    enabled: bool,
+    owner_id: int,
+    attention_user_id: int | None = None,
+    continuation_turn: int = 0,
+    continuation_limit: int = 2,
+    **render_options,
+):
+    """Keep model prose, typed workflow facts and deterministic UI separate.
+
+    Never feed generated UI labels back into the model-prose validator: e.g.
+    response completion is not evidence that a tool operation completed.
+    Callers supply IDs/state, not arbitrary text exempt from validation.
+    """
+    body, audit = await apply_persona_for_delivery(
+        enabled=enabled,
+        original_body=decision.reply,
+        decision=decision,
+        role_id=role_id,
+        persona=persona,
+        **render_options,
+    )
+    if not body:
+        return body, audit
+    if attention_user_id is not None:
+        body = f"<@{int(attention_user_id)}> {body}"
+    if decision.action != "reply":
+        footer = specialist_next_step(
+            decision,
+            owner_mention=f"<@{int(owner_id)}>",
+            continuation_turn=continuation_turn,
+            continuation_limit=continuation_limit,
+        )
+        body += "\n\n" + footer
+    return body, audit
 
 
 async def serve():
@@ -867,7 +908,7 @@ async def serve():
                         max_characters=settings.personas.max_characters,
                     )
                     if persona_audit:
-                        log.info(
+                        (log.warning if persona_audit.fallback else log.info)(
                             "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
                             persona_audit.role_id, persona_audit.version,
                             persona_audit.fallback, persona_audit.fallback_reason,
@@ -1012,24 +1053,9 @@ async def serve():
                                     attention_user = discord.Object(id=int(settings.owner_ids[0]))
                                 elif coordinator.user is not None:
                                     attention_user = coordinator.user
-                                attention = (
-                                    f"<@{attention_user.id}> " if attention_user is not None else ""
-                                )
-                                next_step = specialist_next_step(
-                                    specialist_decision,
-                                    owner_mention=(
-                                        f"<@{settings.owner_ids[0]}>"
-                                        if settings.owner_ids
-                                        else "オーナー"
-                                    ),
-                                    continuation_turn=continuation_turn,
-                                    continuation_limit=settings.specialist_continuation_limit,
-                                )
-                                final_body = f"{attention}{specialist_decision.reply}\n\n{next_step}"
                                 role_id = settings.role_registry.resolve(delegated["role"])
-                                final_body, persona_audit = await apply_persona_for_delivery(
+                                final_body, persona_audit = await render_specialist_for_delivery(
                                     enabled=settings.personas.enabled,
-                                    original_body=final_body,
                                     decision=specialist_decision,
                                     role_id=role_id,
                                     persona=(
@@ -1041,9 +1067,12 @@ async def serve():
                                         if settings.personas.enabled
                                         else None
                                     ),
-                                    control_blocks=tuple(
-                                        part for part in (attention.strip(), next_step) if part
+                                    owner_id=int(settings.owner_ids[0]),
+                                    attention_user_id=(
+                                        attention_user.id if attention_user is not None else None
                                     ),
+                                    continuation_turn=continuation_turn,
+                                    continuation_limit=settings.specialist_continuation_limit,
                                     execution_state="not_run",
                                     identifiers={
                                         "event_id": (
@@ -1053,12 +1082,11 @@ async def serve():
                                     },
                                     targets={"role": delegated["role"]},
                                     quantities={"continuation_turn": continuation_turn},
-                                    next_step=next_step,
                                     timeout_seconds=settings.personas.timeout_seconds,
                                     max_characters=settings.personas.max_characters,
                                 )
                                 if persona_audit:
-                                    log.info(
+                                    (log.warning if persona_audit.fallback else log.info)(
                                         "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
                                         persona_audit.role_id,
                                         persona_audit.version,

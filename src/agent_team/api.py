@@ -609,6 +609,31 @@ def create_app(db=None, settings=None, token=None):
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
 
+    @app.get("/discord-deliveries/{key}", dependencies=[Depends(authenticate)])
+    def discord_delivery(key: str):
+        with db.transaction() as session:
+            record = session.scalar(select(Event).where(
+                Event.source == "discord-delivery", Event.external_id == key,
+            ))
+            return record.data if record else {"message_id": None}
+
+    @app.put("/discord-deliveries/{key}", dependencies=[Depends(authenticate)])
+    def save_discord_delivery(key: str, message_id: str):
+        if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+            raise HTTPException(422, "Invalid delivery key")
+        if not message_id.isascii() or not message_id.isdigit() or len(message_id) > 20:
+            raise HTTPException(422, "Invalid Discord message ID")
+        with db.transaction() as session:
+            record = session.scalar(select(Event).where(
+                Event.source == "discord-delivery", Event.external_id == key,
+            ).with_for_update())
+            if record is None:
+                session.add(Event(task_id="", source="discord-delivery", external_id=key,
+                                  data={"message_id": message_id}))
+            else:
+                record.data = {"message_id": message_id}
+        return {"message_id": message_id}
+
     @app.get("/outbox", dependencies=[Depends(authenticate)])
     def outbox():
         import time

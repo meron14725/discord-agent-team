@@ -111,6 +111,28 @@ def owner_message_links(text: str, guild_id: str, limit: int = 3) -> list[tuple[
     return links
 
 
+class DeliveryReceipts:
+    """Persist message identity before removing the recoverable transport marker."""
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def key(channel_id, bot_user_id, marker):
+        return hashlib.sha256(f"{channel_id}:{bot_user_id}:{marker}".encode()).hexdigest()
+
+    async def get(self, key):
+        response = await self.api.get(f"/discord-deliveries/{key}")
+        response.raise_for_status()
+        return response.json()["message_id"]
+
+    async def save(self, key, message_id):
+        response = await self.api.put(
+            f"/discord-deliveries/{key}", params={"message_id": str(message_id)},
+        )
+        response.raise_for_status()
+
+
 async def send_chunked(
     channel,
     text: str,
@@ -119,6 +141,7 @@ async def send_chunked(
     bot_user_id: int | None = None,
     first_kwargs: dict | None = None,
     known_messages: dict[str, object] | None = None,
+    receipts: DeliveryReceipts | None = None,
 ):
     """Send every deterministic part once and return messages in content order."""
     parts = discord_parts(text, event_id)
@@ -133,10 +156,32 @@ async def send_chunked(
     posted = []
     for part in parts:
         message = existing_by_marker.get(part.marker)
+        key = receipts.key(channel.id, bot_user_id, part.marker) if receipts else None
+        if receipts and message is None:
+            saved_id = await receipts.get(key)
+            if saved_id:
+                try:
+                    candidate = await channel.fetch_message(int(saved_id))
+                except discord.NotFound:
+                    candidate = None
+                if candidate is not None:
+                    if candidate.author.id != bot_user_id:
+                        raise ValueError("Delivery receipt author mismatch")
+                    message = candidate
         if message is None:
             kwargs = dict(first_kwargs or {}) if part.index == 1 else {}
             kwargs.setdefault("allowed_mentions", discord.AllowedMentions.none())
             message = await channel.send(part.content, **kwargs)
+        if receipts:
+            # Leave the visible marker recoverable on any persistence failure.
+            # A crash after persistence is recovered by ID, even beyond history.
+            await receipts.save(key, message.id)
+            suffix = "\n" + part.marker
+            if message.content.endswith(suffix):
+                await message.edit(
+                    content=message.content[:-len(suffix)],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         posted.append(message)
     return posted
 
@@ -149,6 +194,7 @@ async def replace_with_chunked(
     event_id: str,
     bot_user_id: int | None = None,
     allowed_mentions=None,
+    receipts: DeliveryReceipts | None = None,
 ):
     """Replace a progress message, then use the common idempotent part boundary."""
     parts = discord_parts(text, event_id)
@@ -160,6 +206,7 @@ async def replace_with_chunked(
         event_id=event_id,
         bot_user_id=bot_user_id,
         known_messages={parts[0].marker: placeholder},
+        receipts=receipts,
     )
 
 
@@ -211,6 +258,7 @@ async def serve():
         timeout=httpx.Timeout(settings.coordination_timeout + 120),
         headers={"Authorization": "Bearer " + internal_token},
     )
+    receipt_store = DeliveryReceipts(api)
     coordinator_intents = discord.Intents.default()
     coordinator_intents.message_content = settings.message_content
     coordinator = discord.Client(
@@ -338,6 +386,7 @@ async def serve():
         await send_chunked(
             message.channel,
             format_task_status(task),
+            receipts=receipt_store,
             event_id=f"task-{event_kind}-{message.id}",
             bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
             first_kwargs={
@@ -713,6 +762,7 @@ async def serve():
                 await send_chunked(
                     message.channel,
                     f"**{referenced_task['id']}**\n{detail}",
+                    receipts=receipt_store,
                     event_id=f"task-error-{message.id}",
                     bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
                     first_kwargs={
@@ -827,6 +877,7 @@ async def serve():
                         message.channel,
                         waiting,
                         coordinator_body,
+                        receipts=receipt_store,
                         event_id=f"chat-{message.id}-coordinator",
                         bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
                         allowed_mentions=discord.AllowedMentions.none(),
@@ -1022,6 +1073,7 @@ async def serve():
                                 await send_chunked(
                                     channel,
                                     final_body,
+                                    receipts=receipt_store,
                                     event_id=(
                                         f"chat-{message.id}-{delegated['role']}-"
                                         f"{handoff_depth}-{handoff_round}-{continuation_turn}"
@@ -1221,6 +1273,7 @@ async def serve():
                             posted_parts = await send_chunked(
                                 thread,
                                 f"{mention}{item['body']}",
+                                receipts=receipt_store,
                                 event_id=item["id"],
                                 bot_user_id=(
                                     coordinator.user.id if coordinator.user is not None else None
@@ -1297,6 +1350,7 @@ async def serve():
                                 posted_parts = await send_chunked(
                                     channel,
                                     body,
+                                    receipts=receipt_store,
                                     event_id=item["id"],
                                     bot_user_id=(
                                         coordinator.user.id if coordinator.user is not None else None
@@ -1314,6 +1368,11 @@ async def serve():
                                     view=view,
                                     allowed_mentions=owner_mentions,
                                     attachments=files,
+                                )
+                                await send_chunked(
+                                    channel, body, event_id=item["id"],
+                                    bot_user_id=coordinator.user.id, receipts=receipt_store,
+                                    known_messages={parts[0].marker: existing},
                                 )
                             await api.post(
                                 f"/outbox/{item['id']}/ack",
@@ -1334,12 +1393,18 @@ async def serve():
                                 if candidate.author.id == coordinator.user.id and marker in candidate.content:
                                     message = candidate
                                     break
-                            if message is None:
-                                message = await channel.send(f"{item['task_id']}\n{marker}")
+                            seed_parts = discord_parts(item["task_id"], item["id"] + "-thread")
+                            seed = await send_chunked(
+                                channel, item["task_id"], event_id=item["id"] + "-thread",
+                                bot_user_id=coordinator.user.id, receipts=receipt_store,
+                                known_messages={seed_parts[0].marker: message} if message else None,
+                            )
+                            message = seed[0]
                             thread = message.thread or await message.create_thread(name=item["task_id"])
                             body_parts = await send_chunked(
                                 thread,
                                 item["body"],
+                                receipts=receipt_store,
                                 event_id=item["id"] + "-body",
                                 bot_user_id=(
                                     coordinator.user.id if coordinator.user is not None else None
@@ -1394,6 +1459,7 @@ async def serve():
                         posted_parts = await send_chunked(
                             channel,
                             body,
+                            receipts=receipt_store,
                             event_id=item["id"],
                             bot_user_id=bot.user.id if bot.user is not None else None,
                             first_kwargs=kwargs,

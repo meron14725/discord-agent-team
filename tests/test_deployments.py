@@ -29,6 +29,26 @@ def test_merged_task_status_still_explains_pending_deployment():
     assert "自動継続なし" not in body
 
 
+def test_idle_probe_uses_coordinator_transport_override_not_specialist_default(team, monkeypatch):
+    import httpx
+
+    settings, db, *_ = team
+    settings.coordinator_url = "http://host.docker.internal:8091"
+    seen = []
+
+    def health(url, **kwargs):
+        seen.append(url)
+        return httpx.Response(200, json={"status": "ok", "active": 0},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", health)
+    monkeypatch.setattr("agent_team.deployments.secret", lambda _: "test-token")
+    assert bridge(db, settings, {"action": "idle"}) == {"idle": True}
+    assert "http://host.docker.internal:8091/health" in seen
+    assert "http://coordinator-worker:8090/health" not in seen
+    assert len(seen) == len(set(seen))
+
+
 def proposal(team):
     settings, db, *_ = team
     settings.deployment.enabled = True

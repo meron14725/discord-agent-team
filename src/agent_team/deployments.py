@@ -95,7 +95,7 @@ def bridge(db, settings, request):
 
         urls = {settings.coordinator_url, settings.workflow_v2.worker_url}
         urls.update(settings.specialist_endpoint(role.id) for role in settings.role_registry.entries
-                    if role.enabled)
+                    if role.enabled and role.id != "coordinator")
         for url in urls:
             response = httpx.get(url + "/health", headers={"Authorization": "Bearer " + secret("WORKER_TOKEN")},
                                  timeout=5)

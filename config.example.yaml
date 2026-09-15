@@ -27,6 +27,10 @@ lease_seconds: 90
 run_timeout: 1200
 poll_seconds: 60
 approval_seconds: 86400
+deployment:
+  enabled: false # Enable only after installing the independent trusted host supervisor.
+  repository_alias: '' # Exact platform repo alias; never a per-task repository.
+  approval_seconds: 900
 max_files: 100
 source_max_files: 190 # Read-only repository context; publication remains limited by max_files.
 max_bytes: 2000000

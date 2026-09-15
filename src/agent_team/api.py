@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -177,14 +178,17 @@ def enforce_explicit_audience(
     text: str,
     roles: tuple[str, ...] = ("upstream", "downstream", "sre"),
 ) -> CoordinationDecision:
-    if decision.action != "reply" or not explicitly_addresses_all(text):
+    if decision.action not in {"reply", "delegate"} or not explicitly_addresses_all(text):
         return decision
+    # The owner named the audience. Model-selected self/offline/missing roles
+    # must not turn a team greeting into an invalid or partial dispatch.
+    selected = {item.role: item for item in decision.delegations}
     return CoordinationDecision(
         action="delegate",
         reply=decision.reply,
         task_summary="",
         delegations=[
-            CoordinationMessage(
+            selected.get(role) or CoordinationMessage(
                 role=role,
                 instruction=(
                     "オーナーからチーム全員への発言です。元の発言と会話文脈を踏まえ、"
@@ -264,6 +268,14 @@ def create_app(db=None, settings=None, token=None):
             raise HTTPException(401, "Invalid internal credential")
         db.check_leader()
 
+    def conversation_available():
+        from .db import Operation
+
+        with db.transaction() as session:
+            if session.scalar(select(Operation.id).where(
+                Operation.key.like("deployment:%"), Operation.status == "running").limit(1)):
+                raise HTTPException(503, "Docker更新中です。稼働確認後に会話を再開します。")
+
     @app.get("/health")
     def health():
         future = getattr(app.state, "loop", None)
@@ -286,7 +298,7 @@ def create_app(db=None, settings=None, token=None):
         except ValueError as e:
             raise HTTPException(404, str(e)) from e
 
-    @app.post("/coordinate", dependencies=[Depends(authenticate)])
+    @app.post("/coordinate", dependencies=[Depends(authenticate), Depends(conversation_available)])
     async def coordinate(command: CoordinateCommand):
         try:
             if scanner.scan_text(command.text + "\n" + "\n".join(command.history)).blocked:
@@ -307,7 +319,11 @@ def create_app(db=None, settings=None, token=None):
                     {
                         "current_owner_message": command.text,
                         "recent_discord_context_oldest_first": command.history,
-                        "available_roles": enabled_roles,
+                        "available_roles": {
+                            role: description for role, description in enabled_roles.items()
+                            if role != "coordinator"
+                        },
+                        "coordinator_identity": "coordinator: reply directly; never delegate to yourself",
                         "available_repositories": {
                             alias: {"repository": repo.repository, "description": repo.description,
                                     "creates_new_repository": repo.per_task}
@@ -363,11 +379,19 @@ def create_app(db=None, settings=None, token=None):
                     raise GuardError("Coordinator selected an unavailable specialist")
             return decision
         except GuardError as error:
+            logging.getLogger(__name__).warning(
+                "Coordinator decision rejected event=%s reason=%s",
+                command.event_id, scanner.redact_text(str(error)),
+            )
             raise HTTPException(409, str(error)) from error
         except Exception as error:
+            logging.getLogger(__name__).warning(
+                "Coordinator execution failed event=%s error_type=%s",
+                command.event_id, type(error).__name__,
+            )
             raise HTTPException(503, "Coordinator agent is temporarily unavailable") from error
 
-    @app.post("/specialist-turn", dependencies=[Depends(authenticate)])
+    @app.post("/specialist-turn", dependencies=[Depends(authenticate), Depends(conversation_available)])
     async def specialist_turn(command: SpecialistCommand):
         try:
             if scanner.scan_text(
@@ -608,6 +632,31 @@ def create_app(db=None, settings=None, token=None):
             raise HTTPException(409, str(error)) from error
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
+
+    @app.get("/discord-deliveries/{key}", dependencies=[Depends(authenticate)])
+    def discord_delivery(key: str):
+        with db.transaction() as session:
+            record = session.scalar(select(Event).where(
+                Event.source == "discord-delivery", Event.external_id == key,
+            ))
+            return record.data if record else {"message_id": None}
+
+    @app.put("/discord-deliveries/{key}", dependencies=[Depends(authenticate)])
+    def save_discord_delivery(key: str, message_id: str):
+        if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+            raise HTTPException(422, "Invalid delivery key")
+        if not message_id.isascii() or not message_id.isdigit() or len(message_id) > 20:
+            raise HTTPException(422, "Invalid Discord message ID")
+        with db.transaction() as session:
+            record = session.scalar(select(Event).where(
+                Event.source == "discord-delivery", Event.external_id == key,
+            ).with_for_update())
+            if record is None:
+                session.add(Event(task_id="", source="discord-delivery", external_id=key,
+                                  data={"message_id": message_id}))
+            else:
+                record.data = {"message_id": message_id}
+        return {"message_id": message_id}
 
     @app.get("/outbox", dependencies=[Depends(authenticate)])
     def outbox():

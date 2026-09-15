@@ -1,6 +1,5 @@
 role_id: cto
 version: v1
-presentation_marker: 要件から見ます。
 
 # Persona
 

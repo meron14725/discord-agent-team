@@ -1,6 +1,5 @@
 role_id: security_sre
 version: v1
-presentation_marker: 運用面を確認します。
 
 # Persona
 

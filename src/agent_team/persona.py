@@ -22,9 +22,13 @@ Formatter = Callable[["PersonaFormatRequest"], Awaitable[str]]
 QUESTION_RE = re.compile(r"[?？]")
 COMPLETED_RE = re.compile(
     r"(?:"
-    r"(?:実行|変更|作業|送信|公開|マージ|対応|処理|デプロイ|配備|反映|修正|実装|設定|更新|作成|削除|復旧).{0,12}"
+    # Match action predicates, not arbitrary text between a domain noun and
+    # 'しています' (e.g. '実装とテストを担当しています' describes a role).
+    r"(?:実行|変更|作業|送信|公開|マージ|対応|処理|デプロイ|配備|反映|修正|実装|設定|更新|作成|削除|復旧)"
+    r"(?:は|が|を)?(?:すべて|全て|既に|すでに|無事に)?"
     r"(?:済み|完了|終了|成功|終わ(?:り|った)|終えました|しました|しています|できました)"
-    r"|(?:完了|終了|成功|対応済み|処理済み|デプロイ済み|配備済み)(?:です|しました|しています)?"
+    r"|(?:完了|終了|成功|対応済み|処理済み|デプロイ済み|配備済み)(?:です|しました|しています)"
+    r"|(?:^|[。！？\n])\s*(?:完了|終了|成功|対応済み|処理済み|デプロイ済み|配備済み)(?=[。！\n]|$)"
     r")"
 )
 FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
@@ -230,25 +234,19 @@ async def persona_formatter(request: PersonaFormatRequest) -> str:
 
     Persona text is treated as data: it must identify the selected role and
     contain the required Voice section.  It cannot introduce facts or control
-    instructions.  The role-specific lead makes all four presentations
-    distinguishable while the source reply remains intact.
+    instructions. Role-specific language is supplied by the model context;
+    the presentation boundary preserves that source reply.
     """
     if f"role_id: {request.persona.role_id}" not in request.persona.content:
         raise ValueError("persona_role_mismatch")
     if "## Voice" not in request.persona.content:
         raise ValueError("persona_voice_missing")
-    leads = {
-        "coordinator": "結論と次の担当を整理します。",
-        "cto": "要件と技術判断を分けて示します。",
-        "backend_integrator": "実装結果と検証点を示します。",
-        "security_sre": "安全条件と承認状態を先に示します。",
-    }
-    try:
-        marker = re.search(r"^presentation_marker:\s*([^\n]{1,32})$", request.persona.content, re.MULTILINE)
-        style = (marker.group(1) + " ") if marker else leads[request.persona.role_id]
-        return style + request.safe_source_reply
-    except KeyError as exc:
-        raise ValueError("unsupported_persona_role") from exc
+    if request.persona.role_id not in {"coordinator", "cto", "backend_integrator", "security_sre"}:
+        raise ValueError("unsupported_persona_role")
+    # The model already receives the trusted persona. Do not add a canned
+    # introduction, or consume its four-sentence allowance at delivery time.
+    marker = re.search(r"^presentation_marker:\s*([^\n]{1,32})$", request.persona.content, re.MULTILINE)
+    return ((marker.group(1) + " ") if marker else "") + request.safe_source_reply
 
 
 def _validate_candidate(candidate: str, source_reply: str) -> None:
@@ -349,7 +347,7 @@ async def render_persona_reply(
         identifiers=identifiers, targets=targets, quantities=quantities,
         next_step=next_step,
     )
-    control = deterministic_fallback(envelope)
+    control = fixed_fact_block(envelope)
     reason = ""
     try:
         # The formatter gets a separately redacted copy of every textual

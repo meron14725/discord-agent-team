@@ -91,7 +91,20 @@ def format_task_status(task: dict) -> str:
     ]
     if reason := data.get("reason"):
         lines.append(f"理由: {reason}")
-    lines.append(f"次: {task_next_step(state)}")
+    deployments = {
+        "awaiting_approval": ("承認待ち", "オーナーが対象SHAのDocker反映を承認"),
+        "queued": ("実行待ち", "更新担当が事前検証"),
+        "running": ("反映・検証中", "更新担当が稼働確認"),
+        "succeeded": ("反映済み", "なし"),
+        "failed": ("事前検証で停止", "SREが停止理由を確認"),
+        "rolled_back": ("旧版へ復旧済み", "SREが新しい版の失敗原因を確認"),
+        "rollback_failed": ("復旧に失敗", "人間がホスト側で復旧"),
+    }
+    deployment = deployments.get(data.get("deployment_status"))
+    if deployment:
+        lines.extend([f"Docker反映: {deployment[0]}", f"次: {deployment[1]}"])
+    else:
+        lines.append(f"次: {task_next_step(state)}")
     if proposal := data.get("requirements_proposal_url"):
         lines.append(f"最新の要件案: {proposal}")
     return "\n".join(lines)
@@ -111,6 +124,28 @@ def owner_message_links(text: str, guild_id: str, limit: int = 3) -> list[tuple[
     return links
 
 
+class DeliveryReceipts:
+    """Persist message identity before removing the recoverable transport marker."""
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def key(channel_id, bot_user_id, marker):
+        return hashlib.sha256(f"{channel_id}:{bot_user_id}:{marker}".encode()).hexdigest()
+
+    async def get(self, key):
+        response = await self.api.get(f"/discord-deliveries/{key}")
+        response.raise_for_status()
+        return response.json()["message_id"]
+
+    async def save(self, key, message_id):
+        response = await self.api.put(
+            f"/discord-deliveries/{key}", params={"message_id": str(message_id)},
+        )
+        response.raise_for_status()
+
+
 async def send_chunked(
     channel,
     text: str,
@@ -119,6 +154,7 @@ async def send_chunked(
     bot_user_id: int | None = None,
     first_kwargs: dict | None = None,
     known_messages: dict[str, object] | None = None,
+    receipts: DeliveryReceipts | None = None,
 ):
     """Send every deterministic part once and return messages in content order."""
     parts = discord_parts(text, event_id)
@@ -133,10 +169,32 @@ async def send_chunked(
     posted = []
     for part in parts:
         message = existing_by_marker.get(part.marker)
+        key = receipts.key(channel.id, bot_user_id, part.marker) if receipts else None
+        if receipts and message is None:
+            saved_id = await receipts.get(key)
+            if saved_id:
+                try:
+                    candidate = await channel.fetch_message(int(saved_id))
+                except discord.NotFound:
+                    candidate = None
+                if candidate is not None:
+                    if candidate.author.id != bot_user_id:
+                        raise ValueError("Delivery receipt author mismatch")
+                    message = candidate
         if message is None:
             kwargs = dict(first_kwargs or {}) if part.index == 1 else {}
             kwargs.setdefault("allowed_mentions", discord.AllowedMentions.none())
             message = await channel.send(part.content, **kwargs)
+        if receipts:
+            # Leave the visible marker recoverable on any persistence failure.
+            # A crash after persistence is recovered by ID, even beyond history.
+            await receipts.save(key, message.id)
+            suffix = "\n" + part.marker
+            if message.content.endswith(suffix):
+                message = await message.edit(
+                    content=message.content[:-len(suffix)],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         posted.append(message)
     return posted
 
@@ -149,17 +207,19 @@ async def replace_with_chunked(
     event_id: str,
     bot_user_id: int | None = None,
     allowed_mentions=None,
+    receipts: DeliveryReceipts | None = None,
 ):
     """Replace a progress message, then use the common idempotent part boundary."""
     parts = discord_parts(text, event_id)
     mentions = allowed_mentions or discord.AllowedMentions.none()
-    await placeholder.edit(content=parts[0].content, allowed_mentions=mentions)
+    placeholder = await placeholder.edit(content=parts[0].content, allowed_mentions=mentions)
     return await send_chunked(
         channel,
         text,
         event_id=event_id,
         bot_user_id=bot_user_id,
         known_messages={parts[0].marker: placeholder},
+        receipts=receipts,
     )
 
 
@@ -185,7 +245,53 @@ async def apply_persona_for_delivery(
         formatter=formatter,
         **render_options,
     )
-    return rendered.text, rendered.audit
+    # The exact facts block has already been validated and digested for audit.
+    # It is internal metadata, not part of the Discord conversation.
+    visible = "\n".join(
+        line for line in rendered.text.splitlines() if not line.startswith("[fixed-facts]")
+    ).strip()
+    return visible, rendered.audit
+
+
+async def render_specialist_for_delivery(
+    *,
+    decision: SpecialistDecision,
+    role_id: str,
+    persona: PersonaDefinition | None,
+    enabled: bool,
+    owner_id: int,
+    attention_user_id: int | None = None,
+    continuation_turn: int = 0,
+    continuation_limit: int = 2,
+    **render_options,
+):
+    """Keep model prose, typed workflow facts and deterministic UI separate.
+
+    Never feed generated UI labels back into the model-prose validator: e.g.
+    response completion is not evidence that a tool operation completed.
+    Callers supply IDs/state, not arbitrary text exempt from validation.
+    """
+    body, audit = await apply_persona_for_delivery(
+        enabled=enabled,
+        original_body=decision.reply,
+        decision=decision,
+        role_id=role_id,
+        persona=persona,
+        **render_options,
+    )
+    if not body:
+        return body, audit
+    if attention_user_id is not None:
+        body = f"<@{int(attention_user_id)}> {body}"
+    if decision.action != "reply":
+        footer = specialist_next_step(
+            decision,
+            owner_mention=f"<@{int(owner_id)}>",
+            continuation_turn=continuation_turn,
+            continuation_limit=continuation_limit,
+        )
+        body += "\n\n" + footer
+    return body, audit
 
 
 async def serve():
@@ -206,6 +312,7 @@ async def serve():
         timeout=httpx.Timeout(settings.coordination_timeout + 120),
         headers={"Authorization": "Bearer " + internal_token},
     )
+    receipt_store = DeliveryReceipts(api)
     coordinator_intents = discord.Intents.default()
     coordinator_intents.message_content = settings.message_content
     coordinator = discord.Client(
@@ -333,6 +440,7 @@ async def serve():
         await send_chunked(
             message.channel,
             format_task_status(task),
+            receipts=receipt_store,
             event_id=f"task-{event_kind}-{message.id}",
             bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
             first_kwargs={
@@ -659,7 +767,11 @@ async def serve():
             "/buttons/" + custom_id.removeprefix("team:"), json={**identity(interaction), "action": "button"}
         )
         text = (
-            f"{r.json()['id']}: {r.json()['state']}"
+            f"{r.json()['id']}: " + (
+                "Docker反映を受け付けました。"
+                if r.json().get("data", {}).get("deployment_status") == "queued"
+                else r.json()["state"]
+            )
             if r.is_success
             else str(r.json().get("detail", "承認失敗"))
         )
@@ -708,6 +820,7 @@ async def serve():
                 await send_chunked(
                     message.channel,
                     f"**{referenced_task['id']}**\n{detail}",
+                    receipts=receipt_store,
                     event_id=f"task-error-{message.id}",
                     bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
                     first_kwargs={
@@ -812,7 +925,7 @@ async def serve():
                         max_characters=settings.personas.max_characters,
                     )
                     if persona_audit:
-                        log.info(
+                        (log.warning if persona_audit.fallback else log.info)(
                             "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
                             persona_audit.role_id, persona_audit.version,
                             persona_audit.fallback, persona_audit.fallback_reason,
@@ -822,6 +935,7 @@ async def serve():
                         message.channel,
                         waiting,
                         coordinator_body,
+                        receipts=receipt_store,
                         event_id=f"chat-{message.id}-coordinator",
                         bot_user_id=(coordinator.user.id if coordinator.user is not None else None),
                         allowed_mentions=discord.AllowedMentions.none(),
@@ -956,24 +1070,9 @@ async def serve():
                                     attention_user = discord.Object(id=int(settings.owner_ids[0]))
                                 elif coordinator.user is not None:
                                     attention_user = coordinator.user
-                                attention = (
-                                    f"<@{attention_user.id}> " if attention_user is not None else ""
-                                )
-                                next_step = specialist_next_step(
-                                    specialist_decision,
-                                    owner_mention=(
-                                        f"<@{settings.owner_ids[0]}>"
-                                        if settings.owner_ids
-                                        else "オーナー"
-                                    ),
-                                    continuation_turn=continuation_turn,
-                                    continuation_limit=settings.specialist_continuation_limit,
-                                )
-                                final_body = f"{attention}{specialist_decision.reply}\n\n{next_step}"
                                 role_id = settings.role_registry.resolve(delegated["role"])
-                                final_body, persona_audit = await apply_persona_for_delivery(
+                                final_body, persona_audit = await render_specialist_for_delivery(
                                     enabled=settings.personas.enabled,
-                                    original_body=final_body,
                                     decision=specialist_decision,
                                     role_id=role_id,
                                     persona=(
@@ -985,9 +1084,12 @@ async def serve():
                                         if settings.personas.enabled
                                         else None
                                     ),
-                                    control_blocks=tuple(
-                                        part for part in (attention.strip(), next_step) if part
+                                    owner_id=int(settings.owner_ids[0]),
+                                    attention_user_id=(
+                                        attention_user.id if attention_user is not None else None
                                     ),
+                                    continuation_turn=continuation_turn,
+                                    continuation_limit=settings.specialist_continuation_limit,
                                     execution_state="not_run",
                                     identifiers={
                                         "event_id": (
@@ -997,12 +1099,11 @@ async def serve():
                                     },
                                     targets={"role": delegated["role"]},
                                     quantities={"continuation_turn": continuation_turn},
-                                    next_step=next_step,
                                     timeout_seconds=settings.personas.timeout_seconds,
                                     max_characters=settings.personas.max_characters,
                                 )
                                 if persona_audit:
-                                    log.info(
+                                    (log.warning if persona_audit.fallback else log.info)(
                                         "persona_render role=%s version=%s fallback=%s reason=%s facts=%s validation=%s",
                                         persona_audit.role_id,
                                         persona_audit.version,
@@ -1017,6 +1118,7 @@ async def serve():
                                 await send_chunked(
                                     channel,
                                     final_body,
+                                    receipts=receipt_store,
                                     event_id=(
                                         f"chat-{message.id}-{delegated['role']}-"
                                         f"{handoff_depth}-{handoff_round}-{continuation_turn}"
@@ -1177,6 +1279,19 @@ async def serve():
         for client in dict.fromkeys(role_clients.values()):
             await client.wait_until_ready()
         while True:
+            # Host updater checks live Discord readiness, not just container uptime.
+            import time
+            from pathlib import Path
+
+            active_clients = {role_clients[r.id] for r in settings.role_registry.entries
+                              if r.enabled and r.discord_enabled}
+            health_path = Path("/tmp/agent-team-gateway-health.json")
+            health_path.with_suffix(".tmp").write_text(__import__("json").dumps({
+                "ready": bool(active_clients) and all(bot.is_ready() for bot in active_clients),
+                "timestamp": time.time(),
+            }))
+            health_path.with_suffix(".tmp").replace(health_path)
+
             try:
                 response = await api.get("/outbox")
                 response.raise_for_status()
@@ -1216,6 +1331,7 @@ async def serve():
                             posted_parts = await send_chunked(
                                 thread,
                                 f"{mention}{item['body']}",
+                                receipts=receipt_store,
                                 event_id=item["id"],
                                 bot_user_id=(
                                     coordinator.user.id if coordinator.user is not None else None
@@ -1243,6 +1359,7 @@ async def serve():
                                     "requirements": "要件を承認",
                                     "plan": "実装計画を承認",
                                     "merge": "このSHAのマージを承認",
+                                    "deploy": "このSHAをDockerへ反映",
                                 }
                                 view.add_item(
                                     discord.ui.Button(
@@ -1254,7 +1371,8 @@ async def serve():
                                 approvers = (
                                     settings.workflow_v2.requirements_approver_ids
                                     if item["approval"] == "requirements"
-                                    else settings.workflow_v2.plan_approver_ids
+                                    else (settings.owner_ids if item["approval"] in {"merge", "deploy"}
+                                          else settings.workflow_v2.plan_approver_ids)
                                 )
                                 if approvers:
                                     owner = discord.Object(id=int(approvers[0]))
@@ -1292,6 +1410,7 @@ async def serve():
                                 posted_parts = await send_chunked(
                                     channel,
                                     body,
+                                    receipts=receipt_store,
                                     event_id=item["id"],
                                     bot_user_id=(
                                         coordinator.user.id if coordinator.user is not None else None
@@ -1309,6 +1428,11 @@ async def serve():
                                     view=view,
                                     allowed_mentions=owner_mentions,
                                     attachments=files,
+                                )
+                                await send_chunked(
+                                    channel, body, event_id=item["id"],
+                                    bot_user_id=coordinator.user.id, receipts=receipt_store,
+                                    known_messages={parts[0].marker: existing},
                                 )
                             await api.post(
                                 f"/outbox/{item['id']}/ack",
@@ -1329,12 +1453,18 @@ async def serve():
                                 if candidate.author.id == coordinator.user.id and marker in candidate.content:
                                     message = candidate
                                     break
-                            if message is None:
-                                message = await channel.send(f"{item['task_id']}\n{marker}")
+                            seed_parts = discord_parts(item["task_id"], item["id"] + "-thread")
+                            seed = await send_chunked(
+                                channel, item["task_id"], event_id=item["id"] + "-thread",
+                                bot_user_id=coordinator.user.id, receipts=receipt_store,
+                                known_messages={seed_parts[0].marker: message} if message else None,
+                            )
+                            message = seed[0]
                             thread = message.thread or await message.create_thread(name=item["task_id"])
                             body_parts = await send_chunked(
                                 thread,
                                 item["body"],
+                                receipts=receipt_store,
                                 event_id=item["id"] + "-body",
                                 bot_user_id=(
                                     coordinator.user.id if coordinator.user is not None else None
@@ -1369,9 +1499,9 @@ async def serve():
                             view = discord.ui.View(timeout=None)
                             view.add_item(
                                 discord.ui.Button(
-                                    label="仕様を承認"
-                                    if item["approval"] == "spec"
-                                    else "このSHAのマージを承認",
+                                    label={"spec": "仕様を承認", "deploy": "このSHAをDockerへ反映"}.get(
+                                        item["approval"], "このSHAのマージを承認"
+                                    ),
                                     custom_id="team:" + item["id"],
                                     style=discord.ButtonStyle.success,
                                 )
@@ -1389,6 +1519,7 @@ async def serve():
                         posted_parts = await send_chunked(
                             channel,
                             body,
+                            receipts=receipt_store,
                             event_id=item["id"],
                             bot_user_id=bot.user.id if bot.user is not None else None,
                             first_kwargs=kwargs,

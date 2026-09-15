@@ -387,3 +387,39 @@ def test_task_next_step_distinguishes_owner_wait_and_automatic_work():
     assert "自動継続なし" in task_next_step("Merged")
     assert task_waits_for_owner("AwaitingPlanApproval")
     assert not task_waits_for_owner("Implementing")
+
+
+def test_persona_greeting_preserves_conversation_without_internal_metadata():
+    async def scenario():
+        for role in ("coordinator", "cto", "backend_integrator", "security_sre"):
+            reply = "こんにちは！今日もよろしくお願いします。相談があればどうぞ。何から話しましょう？"
+            item = (
+                CoordinationDecision(action="reply", reply=reply, task_summary="", delegations=[])
+                if role == "coordinator" else decision("reply", reply=reply)
+            )
+            body, audit = await apply_persona_for_delivery(
+                enabled=True, original_body=reply, decision=item, role_id=role,
+                persona=PersonaDefinition(role, "v1", Path(f"prompts/personas/{role}/v1/PERSONA.md").read_text()),
+            )
+            assert body == reply
+            assert audit and not audit.fallback
+            assert audit.final_validation == "passed" and audit.fact_digest
+            assert "[fixed-facts]" not in body
+            assert "操作は実行していません" not in body
+
+    asyncio.run(scenario())
+
+
+def test_persona_rejected_completion_keeps_safe_fallback_without_internal_json():
+    async def scenario():
+        item = decision("reply", reply="変更が完了しました。")
+        body, audit = await apply_persona_for_delivery(
+            enabled=True, original_body=item.reply, decision=item, role_id="security_sre",
+            persona=PersonaDefinition("security_sre", "v1", Path("prompts/personas/security_sre/v1/PERSONA.md").read_text()),
+        )
+        assert audit and audit.fallback and audit.final_validation == "passed"
+        assert "完了しました" not in body
+        assert "[fixed-facts]" not in body
+        assert "実行していません" in body
+
+    asyncio.run(scenario())

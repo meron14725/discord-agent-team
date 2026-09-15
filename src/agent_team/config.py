@@ -54,11 +54,11 @@ class WorkflowV2(BaseModel):
     github_issue_conditional_updates: bool = False
     normal_concurrency: int = Field(default=4, ge=1, le=4)
     privileged_concurrency: int = Field(default=1, ge=1, le=1)
-    model_calls_per_task: int = Field(default=30, ge=1, le=30)
-    consultations_per_task: int = Field(default=15, ge=1, le=15)
-    consultations_per_topic: int = Field(default=5, ge=1, le=5)
-    plan_revision_limit: int = Field(default=3, ge=1, le=3)
-    implementation_revision_limit: int = Field(default=3, ge=1, le=3)
+    model_calls_per_task: int = Field(default=150, ge=1, le=150)
+    consultations_per_task: int = Field(default=75, ge=1, le=75)
+    consultations_per_topic: int = Field(default=25, ge=1, le=25)
+    plan_revision_limit: int = Field(default=15, ge=1, le=15)
+    implementation_revision_limit: int = Field(default=15, ge=1, le=15)
     heartbeat_seconds: int = Field(default=120, ge=30, le=120)
     stalled_seconds: int = Field(default=600, ge=300, le=1800)
     renderer_url: str = "http://renderer:8091"
@@ -73,7 +73,16 @@ class WorkflowV2(BaseModel):
         return self
 
 
+class MaintenanceAuthorization(BaseModel):
+    repository: str
+    requirements_hash: str
+    plan_hash: str
+    owner_id: str
+    paths: list[str]
+
+
 class Settings(BaseModel):
+    maintenance_authorizations: dict[str, MaintenanceAuthorization] = Field(default_factory=dict)
     github_reviewer_app: ReviewerApp | None = None
     mode: Literal["mock", "live"] = "mock"
     merge_mode: Literal["disabled", "human_gate", "auto_low_risk"] = "human_gate"
@@ -84,8 +93,8 @@ class Settings(BaseModel):
     default_repo: str = ""
     model: str = ""
     auth_mode: Literal["chatgpt", "api_key"] = "chatgpt"
-    daily_run_limit: int = Field(default=30, ge=1)
-    task_run_limit: int = Field(default=10, ge=1)
+    daily_run_limit: int = Field(default=150, ge=1)
+    task_run_limit: int = Field(default=50, ge=1)
     daily_budget_usd: float = 0
     task_budget_usd: float = 0
     # Reservation is conservatively charged even if a run fails; no invented exact dollar usage.
@@ -96,7 +105,9 @@ class Settings(BaseModel):
     poll_seconds: int = 60
     approval_seconds: int = 86400
     max_files: int = 100
+    source_max_files: int = 190
     max_bytes: int = 2_000_000
+    source_max_bytes: int = 4_000_000
     auto_max_lines: int = 200
     message_content: bool = False
     natural_language_requests: bool = False

@@ -103,7 +103,7 @@ class GitHub:
                 time.sleep(min(2**attempt, 4))
         raise AssertionError("unreachable")
 
-    def source(self, repo, sha):
+    def source(self, repo, sha, *, paths=None):
         tree = self.api(repo, "GET", f"git/trees/{sha}?recursive=1")
         if tree.get("truncated"):
             raise GuardError("Truncated repository tree")
@@ -111,11 +111,13 @@ class GitHub:
         for entry in tree["tree"]:
             if entry["type"] == "tree":
                 continue
+            if paths is not None and entry["path"] not in paths:
+                continue
             safe_path(entry["path"])
             if entry["mode"] not in {"100644", "100755"}:
                 raise GuardError("MVP does not support symlinks/submodules")
             total += entry.get("size", 0)
-            if total > self.settings.max_bytes or len(files) >= self.settings.max_files:
+            if total > self.settings.max_bytes or len(files) >= self.settings.source_max_files:
                 raise GuardError("Source exceeds small-repository MVP limit")
             raw = self.api(repo, "GET", f"git/blobs/{entry['sha']}")
             content = base64.b64decode(raw["content"]).decode("utf-8")
@@ -164,7 +166,8 @@ class GitHub:
                 )
                 continue
             forwarded += len(content)
-            if forwarded > self.settings.max_bytes or len(files) >= self.settings.max_files:
+            if (forwarded > self.settings.source_max_bytes
+                or len(files) >= self.settings.source_max_files):
                 manifest.append({**metadata, "forwarded": False, "reason": "limit"})
                 continue
             files[path] = inspection.text
@@ -337,10 +340,22 @@ class GitHub:
                 },
             )
         )
-        actual = self.api(repo, "GET", f"pulls/{pr['number']}")
-        if actual["head"]["sha"] != head or actual["head"]["repo"]["full_name"] != repo.repository:
-            raise GuardError("Published PR does not match expected commit/repository")
+        actual = self.confirm_published_pr(repo, pr["number"], branch, head)
         return {"pr": actual["number"], "head_sha": head, "pr_url": actual["html_url"]}
+
+    def confirm_published_pr(self, repo, number, branch, head):
+        for attempt in range(3):
+            actual = self.api(repo, "GET", f"pulls/{number}")
+            if actual["head"]["repo"]["full_name"] != repo.repository:
+                raise GuardError("Published PR repository mismatch")
+            if actual["head"]["sha"] == head:
+                return actual
+            ref = self.api(repo, "GET", f"git/ref/heads/{branch}")
+            if ref["object"]["sha"] != head:
+                raise GuardError("Branch changed while confirming published PR")
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        raise GuardError("Published PR does not match expected commit/repository")
 
     def review(self, repo, task, result, key):
         reviews = self.pages(repo, f"pulls/{task.data['pr']}/reviews", "reviewer")
@@ -392,7 +407,7 @@ class GitHub:
         changed = self.pages(repo, f"pulls/{d['pr']}/files")
         if len(changed) != pr["changed_files"]:
             raise GuardError("Incomplete PR file listing")
-        source = self.source(repo, head)
+        source = self.source(repo, head, paths={f["filename"] for f in changed})
         files = {f["filename"]: source.get(f["filename"]) for f in changed}
         checks = self.pages(repo, f"commits/{head}/check-runs?filter=latest", role="reviewer")
         reviews = self.pages(repo, f"pulls/{d['pr']}/reviews")
@@ -491,8 +506,9 @@ class MockGitHub:
     def base(self, repo, attempts=1):
         return self.read("base", {"sha": "a" * 40})["sha"]
 
-    def source(self, repo, sha):
-        return self.read("source:" + sha, {"src/example.py": "def greeting():\n    return 'hello'\n"})
+    def source(self, repo, sha, *, paths=None):
+        source = self.read("source:" + sha, {"src/example.py": "def greeting():\n    return 'hello'\n"})
+        return source if paths is None else {path: source[path] for path in paths if path in source}
 
     def source_context(self, repo, sha):
         source = self.source(repo, sha)

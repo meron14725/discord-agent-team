@@ -229,6 +229,8 @@ class Result(Strict):
 
 
 class RunRequest(Strict):
+    resume_patch_job_id: str = ""
+    maintenance_paths: list[str] = Field(default_factory=list, max_length=100)
     auth_mode: Literal["chatgpt", "api_key"] = "chatgpt"
     job_id: str
     role: RoleId
@@ -394,5 +396,12 @@ class CommandRequest(Strict):
 
 
 class PatchProposal(Strict):
-    patch: str = Field(min_length=1)
+    patch: str = ""
+    patch_file: Literal["", "/tmp/team-implementation.patch"] = ""
     rationale: str = Field(min_length=1, max_length=3000)
+
+    @model_validator(mode="after")
+    def require_one_patch_source(self):
+        if bool(self.patch) == bool(self.patch_file):
+            raise ValueError("Exactly one patch source is required")
+        return self

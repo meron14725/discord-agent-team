@@ -203,12 +203,19 @@ def test_restart_recovers_only_journaled_vms_and_excludes_second_launcher(tmp_pa
     asyncio.run(verify())
 
 
-def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path):
+@pytest.mark.parametrize("brokered,maintenance", [(False, False), (True, False), (True, True)])
+def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path, brokered, maintenance):
     class ScriptedRunner(SbxRunner):
         calls = []
+        model_prompt = ""
 
         async def command(self, job_id, args, *other, **kwargs):
             self.calls.append(args)
+            if "--output-last-message" in args:
+                self.model_prompt = other[-1]
+            if args[-2:] == ["cat", "/tmp/team-result.json"]:
+                response = await MockRunner().run(request(task_id="stale-task"))
+                return response.result.model_dump_json()
             if args == ["version"]:
                 return "sbx version: v0.42.1 validated"
             if args[:2] == ["settings", "get"]:
@@ -232,7 +239,21 @@ def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path):
 
     runner = ScriptedRunner(tmp_path)
     with pytest.raises(GuardError, match="identity"):
-        asyncio.run(runner.run(request()))
+        asyncio.run(runner.run(request(
+            role="backend_integrator" if brokered else "upstream",
+            kind="implement" if brokered else "clarify",
+            maintenance_paths=["src/app.py"] if maintenance else [],
+            files={"app.py": "value = 42\n"},
+            test_commands=[["python", "-m", "pytest"]] if brokered else [],
+        )))
+    if brokered:
+        supplied = json.loads(runner.model_prompt.rsplit("\n", 1)[-1])
+        if maintenance:
+            assert supplied["source_paths"] == ["app.py"]
+            assert "shell read commands" in runner.model_prompt
+        else:
+            assert supplied["files"] == {"app.py": "value = 42\n"}
+        assert supplied["test_commands"] == [["python", "-m", "pytest"]]
     create = next(args for args in runner.calls if args[0] == "create")
     assert create[-1].endswith("/source:ro") and create[-2].endswith("/scratch")
     assert any(
@@ -243,3 +264,86 @@ def test_runner_denies_template_network_and_rejects_stale_identity(tmp_path):
     invocation = next(args for args in runner.calls if "--output-last-message" in args)
     assert "--ignore-user-config" in invocation
     assert 'model_providers.sandboxd.base_url="https://chatgpt.com/backend-api/codex"' in invocation
+
+
+def test_brokered_source_context_delivers_exact_contents_and_command_allowlist():
+    from agent_team.adapters.sbx import brokered_source_context
+
+    req = request(role='backend_integrator', kind='implement',
+                  files={'src/app.py': 'value = "日本語"\n', 'tests/test_app.py': 'assert True\n'},
+                  test_commands=[['python', '-m', 'pytest']])
+    context = brokered_source_context(req)
+    supplied = json.loads(context.split('\n', 2)[-1])
+    assert supplied == {'files': req.files, 'test_commands': req.test_commands}
+    assert 'untrusted data' in context
+    assert 'without invoking shell' in context
+    assert 'Do not claim tests were run' in context
+
+
+def test_runtime_support_is_retained_but_not_duplicated_into_maintenance_prompt():
+    from agent_team.adapters.sbx import brokered_source_context
+
+    req = request(role='backend_integrator', kind='implement', maintenance_paths=['src/app.py'],
+                  files={'src/app.py': 'value = 42', 'tests/test_app.py': 'assert True',
+                         'vendor/bundle.js': 'x' * 1_000_000, 'docs/old-plan.md': 'historical'})
+    payload = json.loads(brokered_source_context(req).rsplit('\n', 1)[-1])
+    assert payload['source_paths'] == sorted(req.files)
+    assert 'read-only source' in brokered_source_context(req)
+    assert 'files' not in payload
+    assert len(req.files['vendor/bundle.js']) == 1_000_000
+    assert len(brokered_source_context(req)) < 2000
+
+
+def test_implementation_and_review_test_runtime_install_offline_only_when_authorized(tmp_path):
+    (tmp_path / 'requirements.txt').write_text('pytest==9.1.1\n')
+    (tmp_path / 'wheels').mkdir()
+    (tmp_path / 'bin').mkdir()
+    (tmp_path / 'bin' / 'patch').write_bytes(b'test-only')
+
+    class RuntimeRunner(SbxRunner):
+        calls = []
+
+        async def command(self, job_id, args, *other, **kwargs):
+            self.calls.append(args)
+            return ''
+
+    runner = RuntimeRunner(test_runtime_dir=tmp_path)
+    req = request(role='backend_integrator', kind='implement', test_commands=[['python','-m','pytest']])
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req))
+    assert runner.calls == []
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))
+    assert len(runner.calls) == 4
+    install = runner.calls[1]
+    assert '--no-index' in install and '--require-hashes' in install
+    assert install[:4] == ['exec','--user','root','sandbox']
+    assert runner.calls[2][-2:] == ['/tmp/team-test-runtime/bin/patch','/usr/bin/patch']
+    assert runner.calls[3][-2:] == ['/usr/bin/python3','/usr/local/bin/python']
+    runner.calls.clear()
+    review = request(role='cto', kind='review', test_commands=[['python','-m','pytest']])
+    asyncio.run(runner.prepare_test_runtime('job', 'sandbox', review))
+    assert len(runner.calls) == 4
+    (tmp_path / 'requirements.txt').unlink()
+    with pytest.raises(GuardError, match='unavailable'):
+        asyncio.run(runner.prepare_test_runtime('job', 'sandbox', req.model_copy(update={'maintenance_paths':['src/app.py']})))
+
+
+def test_collector_allows_baseline_plus_new_files_but_stays_bounded(tmp_path):
+    import subprocess
+    import sys
+
+    from agent_team.adapters.sbx import COLLECT
+
+    source = tmp_path / 'source'
+    source.mkdir()
+    result_path = tmp_path / 'result.json'
+    result_path.write_text('{}')
+    for number in range(101):
+        (source / f'{number}.txt').write_text('content')
+    script = COLLECT.replace('/tmp/team-result.json', str(result_path))
+    completed = subprocess.run([sys.executable, '-c', script, str(source)], capture_output=True, text=True)
+    assert completed.returncode == 0
+    assert len(json.loads(completed.stdout)['files']) == 101
+    for number in range(101, 201):
+        (source / f'{number}.txt').write_text('content')
+    exceeded = subprocess.run([sys.executable, '-c', script, str(source)], capture_output=True, text=True)
+    assert exceeded.returncode != 0 and 'Artifact limit exceeded' in exceeded.stderr

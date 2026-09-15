@@ -100,14 +100,38 @@ HIGH_RISK = ("*lock*", "*auth*", "*billing*", "*migration*", "*infra*", "*requir
 SECRET = re.compile(r"-----BEGIN .*PRIVATE KEY-----|(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})")
 
 
-def validate_files(files, settings, task_id, spec_hash):
+def validate_maintenance_paths(paths):
+    for path in paths:
+        safe_path(path)
+        if any(char in path for char in "*?[]"):
+            raise GuardError("Maintenance paths must be exact")
+        if not (path == "config.example.yaml" or path.startswith("src/") or path.startswith("tests/")
+                or re.fullmatch(r"prompts/personas/[a-z_]+/v[0-9]+/PERSONA\.md", path)):
+            raise GuardError("Maintenance path is outside persona implementation scope")
+    return set(paths)
+
+
+def maintenance_paths(settings, task):
+    grant = settings.maintenance_authorizations.get(task.id)
+    if grant is None:
+        return []
+    if (task.workflow_version != 2 or grant.owner_id not in settings.owner_ids
+        or grant.repository != settings.repo_for(task).repository
+        or grant.requirements_hash != task.data.get("requirements_hash")
+        or grant.plan_hash != task.data.get("plan_hash")):
+        raise GuardError("Stale maintenance authorization")
+    return sorted(validate_maintenance_paths(grant.paths))
+
+
+def validate_files(files, settings, task_id, spec_hash, maintenance=()):
+    exceptions = validate_maintenance_paths(maintenance)
     if not files or len(files) > settings.max_files:
         raise GuardError("Empty or oversized change")
     if sum(len((v or "").encode()) for v in files.values()) > settings.max_bytes:
         raise GuardError("Artifact too large")
     for path, content in files.items():
         safe_path(path)
-        if any(fnmatch.fnmatch(path, pattern) for pattern in FORBIDDEN):
+        if path not in exceptions and any(fnmatch.fnmatch(path, pattern) for pattern in FORBIDDEN):
             raise GuardError(f"Protected path: {path}")
         if content and SECRET.search(content):
             raise GuardError("Potential secret in artifact")

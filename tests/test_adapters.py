@@ -569,3 +569,53 @@ def test_coordinator_selects_allowlisted_repository_without_default_fallback(
         assert response.status_code == 200
         assert response.json()["action"] == expected_action
         assert response.json()["repository_alias"] == alias
+
+
+def test_github_changed_file_read_does_not_decode_unrelated_binary(team, monkeypatch):
+    import base64
+
+    settings, *_ = team
+    github = GitHub(settings, {'publisher': 'test-token'})
+    calls = []
+
+    def api(repo, method, path, **kwargs):
+        calls.append(path)
+        if path.startswith('git/trees/'):
+            return {'truncated': False, 'tree': [
+                {'path': 'docs/image.png', 'type': 'blob', 'mode': '100644', 'sha': 'binary'},
+                {'path': 'docs/work-items/issue-5/plans/v1.md', 'type': 'blob', 'mode': '100644', 'sha': 'plan'},
+            ]}
+        if path == 'git/blobs/plan':
+            return {'content': base64.b64encode(b'# Plan').decode()}
+        raise AssertionError('Unrelated binary must not be fetched')
+
+    monkeypatch.setattr(github, 'api', api)
+    selected = 'docs/work-items/issue-5/plans/v1.md'
+    assert github.source(settings.repos['demo'], 'a' * 40, paths={selected}) == {selected: '# Plan'}
+    assert 'git/blobs/binary' not in calls
+
+
+@pytest.mark.parametrize('case', ['lag', 'foreign_repo', 'moved_ref', 'stale'])
+def test_published_pr_confirmation_retries_only_expected_branch(team, monkeypatch, case):
+    settings, *_ = team
+    github = GitHub(settings, {'publisher': 'test-token'})
+    repo = settings.repos['demo']
+    reads = []
+    monkeypatch.setattr('agent_team.adapters.github.time.sleep', lambda _: None)
+
+    def api(repo, method, path):
+        assert method == 'GET'
+        if path.startswith('pulls/'):
+            reads.append(path)
+            return {'head': {'repo': {'full_name': 'foreign/repo' if case == 'foreign_repo' else repo.repository},
+                             'sha': 'new' if case == 'lag' and len(reads) == 2 else 'old'}}
+        return {'object': {'sha': 'other' if case == 'moved_ref' else 'new'}}
+
+    monkeypatch.setattr(github, 'api', api)
+    if case == 'lag':
+        assert github.confirm_published_pr(repo, 8, 'agent/test', 'new')['head']['sha'] == 'new'
+        assert len(reads) == 2
+    else:
+        with pytest.raises(GuardError):
+            github.confirm_published_pr(repo, 8, 'agent/test', 'new')
+        assert len(reads) == (3 if case == 'stale' else 1)

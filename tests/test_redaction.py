@@ -116,6 +116,21 @@ def test_additional_patterns_are_classified_without_retaining_the_match():
     assert secret not in repr(report)
 
 
+def test_redact_text_uses_all_shared_patterns_and_preserves_safe_context():
+    secrets = [
+        "ghp_" + "D" * 36,
+        "password" + "=" + "G" * 20,
+        "Authorization: Basic " + "H" * 24,
+    ]
+    text = "before " + " middle ".join(secrets) + " after"
+
+    redacted = scanner().redact_text(text)
+
+    assert redacted.startswith("before ") and redacted.endswith(" after")
+    assert redacted.count("[redacted]") == len(secrets)
+    assert all(secret not in redacted for secret in secrets)
+
+
 @pytest.mark.parametrize("salt", [b"short", "not-bytes"])
 def test_scan_salt_must_be_nontrivial_bytes(salt):
     with pytest.raises(ValueError):

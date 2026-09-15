@@ -170,6 +170,26 @@ class SecretScanner:
             findings=ordered,
         )
 
+    def redact_text(self, text: str, marker: str = "[redacted]") -> str:
+        """Replace every detected secret span without retaining the matched value."""
+
+        report = self.scan_text(text)
+        if not report.findings:
+            return text
+        ranges: list[tuple[int, int]] = []
+        for finding in report.findings:
+            if ranges and finding.start <= ranges[-1][1]:
+                ranges[-1] = (ranges[-1][0], max(ranges[-1][1], finding.end))
+            else:
+                ranges.append((finding.start, finding.end))
+        parts: list[str] = []
+        cursor = 0
+        for start, end in ranges:
+            parts.extend((text[cursor:start], marker))
+            cursor = end
+        parts.append(text[cursor:])
+        return "".join(parts)
+
     def inspect_content(self, content: bytes, mime_type: str = "application/octet-stream") -> ContentInspection:
         """Exclude binary content and return clean UTF-8 text only after scanning."""
 

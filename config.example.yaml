@@ -173,6 +173,17 @@ discord_sre:
   audit_channel_id: ''
   require_approval: true
   approval_seconds: 900
+personas:
+  enabled: false # Enable only after offline invariant and rollback verification.
+  directory: prompts/personas
+  active_versions:
+    coordinator: v1
+    cto: v1
+    backend_integrator: v1
+    security_sre: v1
+  max_characters: 1800
+  definition_max_characters: 30000
+  timeout_seconds: 2.0
 workflow_v2:
   enabled: false # 検証リポジトリでAC-01〜AC-17を満たした後にだけ有効化する。
   repository_aliases: []

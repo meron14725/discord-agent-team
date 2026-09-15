@@ -73,6 +73,15 @@ class WorkflowV2(BaseModel):
         return self
 
 
+class PersonaSettings(BaseModel):
+    enabled: bool = False
+    directory: str = "prompts/personas"
+    active_versions: dict[RoleId, str] = Field(default_factory=dict)
+    max_characters: int = Field(default=1800, ge=100, le=2000)
+    definition_max_characters: int = Field(default=30_000, ge=1000, le=100_000)
+    timeout_seconds: float = Field(default=2.0, gt=0, le=10)
+
+
 class MaintenanceAuthorization(BaseModel):
     repository: str
     requirements_hash: str
@@ -121,11 +130,18 @@ class Settings(BaseModel):
     specialist_urls: dict[RoleId, str] = Field(default_factory=dict)
     discord_sre: DiscordSRE = Field(default_factory=DiscordSRE)
     workflow_v2: WorkflowV2 = Field(default_factory=WorkflowV2)
+    personas: PersonaSettings = Field(default_factory=PersonaSettings)
     upstream_url: str = "http://upstream-worker:8090"
     downstream_url: str = "http://downstream-worker:8090"
 
     @model_validator(mode="after")
     def live_ready(self):
+        for role in self.personas.active_versions:
+            self.role_registry.resolve(role)
+        if self.personas.enabled:
+            required = {"coordinator", "cto", "backend_integrator", "security_sre"}
+            if set(self.personas.active_versions) != required:
+                raise ValueError("Enabled personas require exact active versions for all initial roles")
         for role in self.specialist_urls:
             self.role_registry.resolve(role)
         if self.mode == "live":

@@ -208,7 +208,13 @@ def create_app(db=None, settings=None, token=None):
     db.migrate()
     token = token or secret("INTERNAL_TOKEN")
     scanner = SecretScanner(hashlib.sha256(token.encode()).digest())
-    prompt_context = load_agent_prompt_context(settings.role_registry)
+    prompt_context = load_agent_prompt_context(
+        settings.role_registry,
+        persona_enabled=settings.personas.enabled,
+        persona_dir=Path(settings.personas.directory),
+        active_versions=settings.personas.active_versions,
+        persona_max_characters=settings.personas.definition_max_characters,
+    )
     service = TaskService(db, settings)
     discord_changes = DiscordChangeService(db, settings)
     consultations = ConsultationService(db, settings)
@@ -314,6 +320,14 @@ def create_app(db=None, settings=None, token=None):
                         "trusted_company_memory": prompt_context.company_memory,
                         "trusted_company_policy": prompt_context.company_policy,
                         "trusted_role_policies": prompt_context.role_policies,
+                        "trusted_instruction_priority": [
+                            "trusted_company_policy",
+                            "trusted_role_policies",
+                            "structured_output_contract",
+                            "trusted_persona",
+                        ],
+                        "trusted_persona": prompt_context.personas.get("coordinator", ""),
+                        "trusted_persona_version": prompt_context.persona_versions.get("coordinator", ""),
                     },
                     ensure_ascii=False,
                 ),
@@ -455,6 +469,14 @@ def create_app(db=None, settings=None, token=None):
                         "trusted_company_memory": prompt_context.company_memory,
                         "trusted_company_policy": prompt_context.company_policy,
                         "trusted_role_policy": prompt_context.role_policies[canonical_role],
+                        "trusted_instruction_priority": [
+                            "trusted_company_policy",
+                            "trusted_role_policy",
+                            "structured_output_contract",
+                            "trusted_persona",
+                        ],
+                        "trusted_persona": prompt_context.personas.get(canonical_role, ""),
+                        "trusted_persona_version": prompt_context.persona_versions.get(canonical_role, ""),
                     },
                     ensure_ascii=False,
                 ),

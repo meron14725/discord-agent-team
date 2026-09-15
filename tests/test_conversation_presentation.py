@@ -150,13 +150,32 @@ def test_system_ui_does_not_change_workflow_facts_or_count_as_model_prose(action
         assert "<@123>の承認待ち" in body
 
 
-def test_unexecuted_completion_claim_is_still_blocked_in_model_prose():
+@pytest.mark.parametrize("claim", [
+    "変更を完了しました。", "実装しました。", "反映しています。",
+    "変更はすべて完了です。", "処理は完了です。", "完了",
+])
+def test_unexecuted_completion_claim_is_still_blocked_in_model_prose(claim):
     body, audit = asyncio.run(render_specialist_for_delivery(
-        decision=decision(reply="変更を完了しました。"), role_id="cto",
+        decision=decision(reply=claim), role_id="cto",
         persona=persona("cto"), enabled=True, owner_id=123,
     ))
     assert audit.fallback and audit.fallback_reason == "not_run_contradiction"
-    assert "変更を完了しました" not in body
+    assert claim not in body
+
+
+@pytest.mark.parametrize("description", [
+    "実装とテストを担当しています。",
+    "変更統合と回帰テストを担当しています。",
+    "復旧や監視を専門にしています。",
+    "完了条件の整理や設計について相談できます。",
+])
+def test_responsibilities_are_not_mistaken_for_executed_operations(description):
+    body, audit = asyncio.run(render_specialist_for_delivery(
+        decision=decision(reply=description), role_id="backend_integrator",
+        persona=persona("backend_integrator"), enabled=True, owner_id=123,
+    ))
+    assert not audit.fallback, audit.fallback_reason
+    assert body == description
 
 
 def test_placeholder_delivery_uses_edit_return_value_and_removes_marker(team):

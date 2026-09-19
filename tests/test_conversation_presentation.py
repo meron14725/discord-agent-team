@@ -29,6 +29,21 @@ def persona(role):
     )
 
 
+@pytest.mark.parametrize("reply,blocked", [
+    ("GitHubへの接続を許可するには、オーナーの承認が必要です。", False),
+    ("権限変更には承認が必要です。公開情報の読み取りは制御側で行えます。", False),
+    ("現在はオーナーの承認待ちです。", True),
+])
+def test_approval_policy_explanation_is_not_an_active_approval_request(reply, blocked):
+    body, audit = asyncio.run(render_specialist_for_delivery(
+        decision=decision(reply=reply), role_id="security_sre",
+        persona=persona("security_sre"), enabled=True, owner_id=123,
+    ))
+    assert audit.fallback is blocked
+    if not blocked:
+        assert body == reply
+
+
 def decision(action="reply", reply="担当です。要件を整理します。"):
     return SpecialistDecision(
         action=action, reply=reply, task_summary="実装の検討" if action == "recommend_task" else "",

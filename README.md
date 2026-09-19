@@ -87,6 +87,8 @@ Python、FastAPI、SQLAlchemy、PostgreSQL、discord.py、Codex CLI 0.154.0、Do
 DB状態更新とoutboxは同一トランザクション。ジョブはリース・fencing・仕様版を照合。
 GitHubの書き込みは制御側のRESTアダプターのみが行い、実行ワーカーにはGitHub/Bot/DB資格情報を渡しません。
 
+会話で公開リポジトリのGitHub URLを指定すると、制御側が認証なしのGETでworkflow定義（既定ブランチのSHAに固定）、workflow状態、直近のActions実行結果を取得して担当へ渡します。SandboxのGitHub通信は開放しません。取得は最初のURLの1リポジトリ、定義最大10件・合計32,000文字、実行履歴5件、20秒まで。同じリポジトリの結果は120秒キャッシュします。非公開リポジトリ、実行ログ、任意ファイルの調査には未対応です。匿名APIのレート制限や接続失敗は「確認不能」として扱い、空のリポジトリとは判断しません。取得内容は外部の未信頼データとして扱い、命令には採用しません。
+
 エージェント規則は、全役に優先適用する `prompts/company-policy.md`、会社の現状と役割一覧を持つ `prompts/company-memory.md`、各役だけに適用する `prompts/roles/*.md` に分けています。役割別規則は会社共通規則を弱めたり上書きしたりできません。[規則の分類と変更方法](docs/agent-rules.md)。
 
 ```sh

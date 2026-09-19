@@ -34,6 +34,9 @@ COMPLETED_RE = re.compile(
 FAILED_RE = re.compile(r"(?:失敗|失敗しました|failed)", re.IGNORECASE)
 NOT_RUN_RE = re.compile(r"(?:未実行|実行していません|not[_ -]?run)", re.IGNORECASE)
 APPROVAL_WAIT_RE = re.compile(r"(?:承認待ち|承認が必要|approval\s+required)", re.IGNORECASE)
+ACTIVE_APPROVAL_WAIT_RE = re.compile(
+    r"(?:承認待ち(?:です|になっています)|承認を待っています|awaiting approval)", re.IGNORECASE
+)
 APPROVAL_DONE_RE = re.compile(r"(?:承認済み|承認は不要|承認不要|approved)", re.IGNORECASE)
 HANDOFF_RE = re.compile(r"(?:引き継ぎ|委任)(?:ます|ました|済み)")
 TASK_REGISTERED_RE = re.compile(r"(?:案件|タスク|TASK).{0,12}(?:登録|作成)(?:済み|しました)")
@@ -293,7 +296,7 @@ def validate_final_reply(
     if envelope.approval_state == "waiting":
         if APPROVAL_DONE_RE.search(presentation):
             raise ValueError("approval_waiting_contradiction")
-    elif APPROVAL_WAIT_RE.search(presentation):
+    elif ACTIVE_APPROVAL_WAIT_RE.search(presentation):
         raise ValueError("approval_state_contradiction")
     checks.append("approval_consistent")
     if envelope.action not in {"handoff", "delegate"} and HANDOFF_RE.search(presentation):
@@ -306,7 +309,7 @@ def validate_final_reply(
         "owner_approval": ("次の自動操作はありません", "回答待ち"),
         "control_handoff": ("次の自動操作はありません",),
         "control_delegation": ("次の自動操作はありません",),
-        "complete": ("回答待ち", "承認待ち", "引き継ぎます", "委任します"),
+        "complete": ("回答待ちです", "承認待ちです", "引き継ぎます", "委任します"),
     }
     if any(value in presentation for value in next_step_conflicts.get(envelope.next_step, ())):
         raise ValueError("next_step_contradiction")
